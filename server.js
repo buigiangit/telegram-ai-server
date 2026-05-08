@@ -42,6 +42,12 @@ Quy tắc:
 - Nếu mode là SCALP hoặc SWING thì phải hiện mode.
 - SCALP: ưu tiên M15/H1, entry sát, TP ngắn.
 - SWING: ưu tiên H4/D1, entry rộng hơn, TP xa hơn.
+- Funding dương cao: thị trường nghiêng về LONG đông, cẩn thận long squeeze.
+- Funding âm sâu: thị trường nghiêng về SHORT đông, cẩn thận short squeeze.
+- Giá tăng + OI tăng: dòng tiền futures ủng hộ xu hướng tăng.
+- Giá tăng + OI giảm: có thể chỉ là short cover, pump yếu.
+- Giá giảm + OI tăng: phe short mở thêm, áp lực giảm mạnh hơn.
+- Giá giảm + OI giảm: có thể là đóng vị thế, xu hướng yếu dần.
 - Nếu chọn CHỜ thì:
   + Không ghi Entry/SL/TP
   + Chỉ ghi lý do chờ.
@@ -58,7 +64,7 @@ Nếu mode là SCALP hoặc SWING:
 ❇️ Mode: SCALP hoặc SWING
 
 ❇️ Nhận định:
-👉 Viết 1 đoạn ngắn gọn, chuyên nghiệp.
+👉 Viết 1 đoạn ngắn gọn, chuyên nghiệp. Có nhắc Funding/OI nếu dữ liệu có ý nghĩa.
 
 ❗️Khuyến nghị:
 🔵 Long
@@ -124,6 +130,7 @@ MODE SCALP:
 - Dùng M15 để chọn Entry.
 - Entry phải sát vùng hỗ trợ/kháng cự gần.
 - TP ngắn hơn, SL chặt hơn.
+- Funding/OI dùng để tránh vào lệnh ngược đám đông quá nóng.
 - Nếu giá đang giữa range, ưu tiên CHỜ.
 `,
     };
@@ -142,6 +149,7 @@ MODE SWING:
 - Dùng H4 để chọn Entry.
 - Entry có thể rộng hơn.
 - TP xa hơn, SL rộng hơn.
+- Funding/OI dùng để xác nhận dòng tiền futures.
 - Bỏ nhiễu ngắn hạn M15/H1.
 `,
     };
@@ -158,6 +166,7 @@ MODE SWING:
 MODE DEFAULT:
 - Ưu tiên xu hướng D1 và H4.
 - Dùng H1 để chọn vùng Entry.
+- Funding/OI dùng để đánh giá tâm lý futures.
 `,
   };
 }
@@ -310,6 +319,77 @@ async function getBinanceKlines(symbol, interval = "1h", limit = 250) {
   }));
 }
 
+async function getFundingRate(symbol) {
+  try {
+    const url =
+      `https://fapi.binance.com/fapi/v1/fundingRate` +
+      `?symbol=${symbol}&limit=1`;
+
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (!Array.isArray(data) || !data.length) return null;
+
+    return Number(data[0].fundingRate);
+  } catch (error) {
+    console.error("FUNDING_ERROR:", error);
+    return null;
+  }
+}
+
+async function getOpenInterest(symbol) {
+  try {
+    const url =
+      `https://fapi.binance.com/fapi/v1/openInterest` +
+      `?symbol=${symbol}`;
+
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (!data || data.openInterest === undefined) return null;
+
+    return Number(data.openInterest);
+  } catch (error) {
+    console.error("OI_ERROR:", error);
+    return null;
+  }
+}
+
+async function getOpenInterestStats(symbol) {
+  try {
+    const url =
+      `https://fapi.binance.com/futures/data/openInterestHist` +
+      `?symbol=${symbol}&period=1h&limit=2`;
+
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (!Array.isArray(data) || data.length < 2) {
+      return {
+        oiChangePct1h: null,
+      };
+    }
+
+    const prev = Number(data[0].sumOpenInterest);
+    const now = Number(data[1].sumOpenInterest);
+
+    if (!prev || !now) {
+      return {
+        oiChangePct1h: null,
+      };
+    }
+
+    return {
+      oiChangePct1h: ((now - prev) / prev) * 100,
+    };
+  } catch (error) {
+    console.error("OI_HIST_ERROR:", error);
+    return {
+      oiChangePct1h: null,
+    };
+  }
+}
+
 async function getGoldPrice() {
   const res = await fetch("https://api.gold-api.com/price/XAU");
   const data = await res.json();
@@ -436,7 +516,10 @@ async function getMarketContext(symbol, mode = "DEFAULT") {
       symbol: "XAUUSD",
       mode: modeConfig.mode,
       modeRule: modeConfig.rule,
-      note: "XAU dùng giá tham khảo, chưa có EMA/RSI/MACD đầy đủ.",
+      note: "XAU dùng giá tham khảo, chưa có Funding/OI.",
+      fundingRate: null,
+      openInterest: null,
+      oiChangePct1h: null,
       frames: [
         {
           tf: modeConfig.mode === "SCALP" ? "M15/H1 proxy" : "H1 proxy",
@@ -461,20 +544,27 @@ async function getMarketContext(symbol, mode = "DEFAULT") {
     throw new Error("Dầu chưa có nguồn dữ liệu ổn định trong bản này.");
   }
 
-  const candleResults = await Promise.all(
-    modeConfig.intervals.map((item) =>
-      getBinanceKlines(symbol, item.interval, 250).then((candles) => ({
-        label: item.label,
-        candles,
-      }))
-    )
-  );
+  const [fundingRate, openInterest, oiStats, ...candleResults] =
+    await Promise.all([
+      getFundingRate(symbol),
+      getOpenInterest(symbol),
+      getOpenInterestStats(symbol),
+      ...modeConfig.intervals.map((item) =>
+        getBinanceKlines(symbol, item.interval, 250).then((candles) => ({
+          label: item.label,
+          candles,
+        }))
+      ),
+    ]);
 
   return {
     symbol,
     mode: modeConfig.mode,
     modeRule: modeConfig.rule,
     note: "",
+    fundingRate,
+    openInterest,
+    oiChangePct1h: oiStats?.oiChangePct1h ?? null,
     frames: candleResults.map((item) =>
       analyzeTimeframe(item.candles, item.label)
     ),
@@ -491,6 +581,11 @@ function fmt(n) {
   if (num >= 1000) return num.toFixed(2);
   if (num >= 1) return num.toFixed(4);
   return num.toFixed(8);
+}
+
+function fmtPct(n) {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return "N/A";
+  return `${Number(n).toFixed(4)}%`;
 }
 
 function frameText(f) {
@@ -522,6 +617,10 @@ Symbol: ${data.symbol}
 Mode: ${data.mode}
 Ghi chú: ${data.note || "Không có"}
 
+Funding Rate: ${fmtPct(data.fundingRate == null ? null : data.fundingRate * 100)}
+Open Interest: ${fmt(data.openInterest)}
+OI Change 1H: ${fmtPct(data.oiChangePct1h)}
+
 ${data.modeRule}
 
 ${data.frames.map(frameText).join("\n")}
@@ -530,6 +629,9 @@ Yêu cầu:
 - Bắt buộc format đúng mẫu.
 - Nếu Mode DEFAULT thì không hiện mục Mode.
 - Nếu Mode SCALP hoặc SWING thì hiện Mode.
+- Phải dùng Funding Rate và Open Interest để đánh giá tâm lý futures nếu dữ liệu khác N/A.
+- Nếu Funding dương cao và OI tăng nóng thì hạn chế FOMO LONG.
+- Nếu Funding âm sâu và OI tăng nóng thì cẩn thận SHORT squeeze.
 - Nếu LONG/SHORT phải có Entry, SL, TP1, TP2.
 - Nếu CHỜ thì không ghi Entry/SL/TP.
 - Trả lời đẹp, dễ đọc như bài phân tích trader chuyên nghiệp.
@@ -544,7 +646,7 @@ ${userMessage}
 
 ${marketContext}
 `,
-    max_output_tokens: 450,
+    max_output_tokens: 500,
   });
 
   return response.output_text || "Bot chưa phân tích được.";
