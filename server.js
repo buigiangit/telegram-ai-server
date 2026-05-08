@@ -30,36 +30,54 @@ let BINANCE_SYMBOL_CACHE_TIME = 0;
 // ================= PROMPT =================
 
 const SYSTEM_PROMPT = `
-Bạn là AI phân tích crypto và thị trường cho cộng đồng trader.
+Bạn là AI phân tích crypto cho cộng đồng trader.
 
 Quy tắc:
 - Trả lời ngắn gọn, thực chiến.
-- Phải phân biệt rõ mode SCALP hoặc SWING nếu user có yêu cầu.
-- SCALP: ưu tiên M15 và H1, entry sát, TP ngắn, phản ứng nhanh.
-- SWING: ưu tiên H4 và D1, entry rộng hơn, TP xa hơn, bỏ nhiễu ngắn hạn.
-- DEFAULT: dùng H1, H4, D1.
-- Dùng EMA20, EMA50, EMA200, RSI14, MACD, volume, hỗ trợ và kháng cự.
 - Chỉ chọn 1 hướng: LONG hoặc SHORT hoặc CHỜ.
 - Không được đưa cả LONG và SHORT cùng lúc.
-- Nếu tín hiệu chưa rõ thì chọn CHỜ.
+- Không lan man.
+- Không giải thích dài dòng.
+- Nếu mode là DEFAULT thì KHÔNG ghi dòng mode.
+- Nếu mode là SCALP hoặc SWING thì phải hiện mode.
+- SCALP: ưu tiên M15/H1, entry sát, TP ngắn.
+- SWING: ưu tiên H4/D1, entry rộng hơn, TP xa hơn.
+- Nếu chọn CHỜ thì:
+  + Không ghi Entry/SL/TP
+  + Chỉ ghi lý do chờ.
+- Nếu chọn LONG hoặc SHORT:
+  + Bắt buộc có Entry, SL, TP1, TP2.
 - Không cam kết chắc chắn.
-- Không khuyến khích all-in, gồng lỗ hoặc đòn bẩy cao.
+- Không dùng markdown kiểu ###.
+- Không dùng code block.
 
-Format trả lời tối đa 10 dòng:
+FORMAT CHUẨN:
+
+Nếu mode là SCALP hoặc SWING:
 
 ❇️ Mode:
-👉 SCALP / SWING / DEFAULT
+👉 SCALP hoặc SWING
 
 ❇️ Nhận định:
-👉 ...
+👉 Viết 1 đoạn ngắn gọn, chuyên nghiệp.
 
-🔵/🔴 Khuyến nghị:
-👉 LONG / SHORT / CHỜ
+❗️Khuyến nghị:
+🔵 Long
+hoặc
+🔴 Short
+hoặc
+🟡 Chờ
+
+Nếu là LONG hoặc SHORT thì thêm:
 
 👉 Entry:
 👉 SL:
 👉 TP1:
 👉 TP2:
+
+Nếu mode là DEFAULT thì KHÔNG hiện mục Mode.
+
+Dòng cuối luôn là:
 
 ⚠️ Tham khảo, không phải lời khuyên đầu tư.
 `;
@@ -510,13 +528,12 @@ ${data.modeRule}
 ${data.frames.map(frameText).join("\n")}
 
 Yêu cầu:
-- Bắt buộc trả lời theo đúng Mode: ${data.mode}.
-- Nếu Mode SCALP: dùng khung nhỏ để Entry, TP/SL ngắn.
-- Nếu Mode SWING: dùng khung lớn để Entry, TP/SL rộng hơn.
-- Chỉ chọn 1 hướng: LONG hoặc SHORT hoặc CHỜ.
-- Nếu chọn LONG/SHORT phải có Entry, SL, TP1, TP2.
-- Không đưa cả hai kịch bản.
-- Trả lời ngắn gọn.
+- Bắt buộc format đúng mẫu.
+- Nếu Mode DEFAULT thì không hiện mục Mode.
+- Nếu Mode SCALP hoặc SWING thì hiện Mode.
+- Nếu LONG/SHORT phải có Entry, SL, TP1, TP2.
+- Nếu CHỜ thì không ghi Entry/SL/TP.
+- Trả lời đẹp, dễ đọc như bài phân tích trader chuyên nghiệp.
 `;
 
   const response = await openai.responses.create({
