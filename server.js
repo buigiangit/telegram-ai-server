@@ -6,30 +6,26 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-
 app.use(express.json());
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
 const PORT = process.env.PORT || 3001;
+const AI_MODEL = process.env.AI_MODEL || "gpt-4.1-mini";
 
-const AI_MODEL =
-  process.env.AI_MODEL || "gpt-4.1-mini";
-
-if (!BOT_TOKEN) {
-  throw new Error("Missing BOT_TOKEN");
-}
-
-if (!OPENAI_API_KEY) {
-  throw new Error("Missing OPENAI_API_KEY");
-}
+if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
+if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY");
 
 const bot = new Telegraf(BOT_TOKEN);
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-});
+let BOT_ENABLED = true;
+
+const USER_COOLDOWN_MS = 15 * 1000;
+const userCooldown = new Map();
+
+let BINANCE_SYMBOL_CACHE = [];
+let BINANCE_SYMBOL_CACHE_TIME = 0;
 
 // ================= PROMPT =================
 
@@ -37,18 +33,17 @@ const SYSTEM_PROMPT = `
 Bạn là AI phân tích crypto và thị trường cho cộng đồng trader.
 
 Quy tắc:
-- Trả lời ngắn gọn.
-- Thực chiến.
-- Không lan man.
-- Dựa vào EMA20, EMA50, EMA200, RSI14.
-- Dựa vào hỗ trợ và kháng cự.
-- Chỉ chọn 1 hướng:
-LONG hoặc SHORT hoặc CHỜ.
-- Không được đưa LONG và SHORT cùng lúc.
-- Không được nói chung chung.
+- Trả lời ngắn gọn, thực chiến.
+- Dựa trên dữ liệu H1, H4, D1 được cung cấp.
+- Ưu tiên xu hướng H4 và D1, dùng H1 để tìm entry.
+- Dùng EMA20, EMA50, EMA200, RSI14, MACD, volume, hỗ trợ và kháng cự.
+- Chỉ chọn 1 hướng: LONG hoặc SHORT hoặc CHỜ.
+- Không được đưa cả LONG và SHORT cùng lúc.
+- Nếu tín hiệu chưa rõ thì chọn CHỜ.
 - Không cam kết chắc chắn.
+- Không khuyến khích all-in, gồng lỗ hoặc đòn bẩy cao.
 
-Format:
+Format trả lời tối đa 10 dòng:
 
 ❇️ Nhận định:
 👉 ...
@@ -64,29 +59,27 @@ Format:
 ⚠️ Tham khảo, không phải lời khuyên đầu tư.
 `;
 
-// ================= BINANCE CACHE =================
+// ================= ADMIN =================
 
-let BINANCE_SYMBOL_CACHE = [];
+function isAdmin(ctx) {
+  const adminIds = (process.env.ADMIN_IDS || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
 
-let BINANCE_SYMBOL_CACHE_TIME = 0;
+  if (adminIds.length === 0) return true;
 
-// ================= GET BINANCE SYMBOLS =================
+  return adminIds.includes(String(ctx.from?.id));
+}
+
+// ================= SYMBOL =================
 
 async function getBinanceSymbols() {
-
-  const res = await fetch(
-    "https://api.binance.com/api/v3/exchangeInfo"
-  );
-
+  const res = await fetch("https://api.binance.com/api/v3/exchangeInfo");
   const data = await res.json();
 
-  if (
-    !data ||
-    !Array.isArray(data.symbols)
-  ) {
-    throw new Error(
-      "Không lấy được danh sách Binance"
-    );
+  if (!data || !Array.isArray(data.symbols)) {
+    throw new Error("Không lấy được danh sách Binance");
   }
 
   return data.symbols
@@ -94,109 +87,57 @@ async function getBinanceSymbols() {
     .map((s) => s.symbol);
 }
 
-// ================= CACHE =================
-
 async function getCachedBinanceSymbols() {
-
   const now = Date.now();
 
-  // cache 6h
   if (
     BINANCE_SYMBOL_CACHE.length > 0 &&
-    now - BINANCE_SYMBOL_CACHE_TIME <
-      6 * 60 * 60 * 1000
+    now - BINANCE_SYMBOL_CACHE_TIME < 6 * 60 * 60 * 1000
   ) {
     return BINANCE_SYMBOL_CACHE;
   }
 
-  BINANCE_SYMBOL_CACHE =
-    await getBinanceSymbols();
-
+  BINANCE_SYMBOL_CACHE = await getBinanceSymbols();
   BINANCE_SYMBOL_CACHE_TIME = now;
-
   return BINANCE_SYMBOL_CACHE;
 }
 
-// ================= DETECT SYMBOL =================
-
 async function detectSymbol(text) {
-
   if (!text) return null;
 
   const upper = text.toUpperCase();
 
-  // ===== SPECIAL =====
-
   const specialMap = [
     {
-      keywords: [
-        "XAU",
-        "GOLD",
-        "VANG",
-        "VÀNG",
-      ],
+      keywords: ["XAU", "GOLD", "VANG", "VÀNG"],
       symbol: "XAUUSD",
     },
-
     {
-      keywords: [
-        "OIL",
-        "DAU",
-        "DẦU",
-        "WTI",
-        "USOIL",
-      ],
+      keywords: ["OIL", "DAU", "DẦU", "WTI", "USOIL"],
       symbol: "USOIL",
     },
   ];
 
   for (const item of specialMap) {
-
     for (const key of item.keywords) {
-
-      const regex = new RegExp(
-        `\\b${key}\\b`,
-        "i"
-      );
-
-      if (regex.test(upper)) {
-        return item.symbol;
-      }
+      const regex = new RegExp(`\\b${key}\\b`, "i");
+      if (regex.test(upper)) return item.symbol;
     }
   }
 
-  // ===== BINANCE =====
+  const binanceSymbols = await getCachedBinanceSymbols();
 
-  const binanceSymbols =
-    await getCachedBinanceSymbols();
-
-  // full pair
-
-  const fullPairMatch =
-    upper.match(
-      /\b([A-Z0-9]{2,20}USDT)\b/
-    );
-
+  const fullPairMatch = upper.match(/\b([A-Z0-9]{2,20}USDT)\b/);
   if (fullPairMatch) {
-
     const pair = fullPairMatch[1];
-
-    if (
-      binanceSymbols.includes(pair)
-    ) {
-      return pair;
-    }
+    if (binanceSymbols.includes(pair)) return pair;
   }
 
-  // split words
-
-  const words =
-    upper.match(
-      /\b[A-Z0-9]{2,15}\b/g
-    ) || [];
+  const words = upper.match(/\b[A-Z0-9]{2,15}\b/g) || [];
 
   const ignoreWords = [
     "BOT",
+    "AI",
     "LONG",
     "SHORT",
     "BUY",
@@ -224,440 +165,371 @@ async function detectSymbol(text) {
     "ĐƯỢC",
     "KHONG",
     "KHÔNG",
+    "GIUP",
+    "GIÚP",
+    "XEM",
   ];
 
   for (const word of words) {
-
-    if (
-      ignoreWords.includes(word)
-    ) {
-      continue;
-    }
+    if (ignoreWords.includes(word)) continue;
 
     const pair = `${word}USDT`;
 
-    if (
-      binanceSymbols.includes(pair)
-    ) {
-      return pair;
-    }
+    if (binanceSymbols.includes(pair)) return pair;
   }
 
   return null;
 }
 
-// ================= GET BINANCE KLINES =================
+// ================= MARKET DATA =================
 
-async function getBinanceKlines(
-  symbol = "BTCUSDT",
-  interval = "1h",
-  limit = 200
-) {
-
+async function getBinanceKlines(symbol, interval = "1h", limit = 250) {
   const url =
     `https://api.binance.com/api/v3/klines` +
-    `?symbol=${symbol}` +
-    `&interval=${interval}` +
-    `&limit=${limit}`;
+    `?symbol=${symbol}&interval=${interval}&limit=${limit}`;
 
   const res = await fetch(url);
-
   const data = await res.json();
 
   if (!Array.isArray(data)) {
-    throw new Error(
-      `Không lấy được dữ liệu ${symbol}`
-    );
+    throw new Error(`Không lấy được dữ liệu ${symbol}`);
   }
 
   return data.map((k) => ({
+    openTime: k[0],
     open: Number(k[1]),
     high: Number(k[2]),
     low: Number(k[3]),
     close: Number(k[4]),
+    volume: Number(k[5]),
   }));
 }
 
-// ================= EMA =================
-
-function ema(values, period) {
-
-  if (
-    !values ||
-    values.length < period
-  ) {
-    return null;
-  }
-
-  const k = 2 / (period + 1);
-
-  let result = values[0];
-
-  for (let i = 1; i < values.length; i++) {
-    result =
-      values[i] * k +
-      result * (1 - k);
-  }
-
-  return result;
-}
-
-// ================= RSI =================
-
-function rsi(values, period = 14) {
-
-  if (
-    !values ||
-    values.length <= period
-  ) {
-    return null;
-  }
-
-  let gains = 0;
-
-  let losses = 0;
-
-  for (
-    let i = values.length - period;
-    i < values.length;
-    i++
-  ) {
-
-    const diff =
-      values[i] - values[i - 1];
-
-    if (diff >= 0) {
-      gains += diff;
-    } else {
-      losses -= diff;
-    }
-  }
-
-  if (losses === 0) {
-    return 100;
-  }
-
-  const rs = gains / losses;
-
-  return 100 - 100 / (1 + rs);
-}
-
-// ================= SUPPORT / RESISTANCE =================
-
-function findSupportResistance(candles) {
-
-  const recent = candles.slice(-50);
-
-  return {
-    support: Math.min(
-      ...recent.map((c) => c.low)
-    ),
-
-    resistance: Math.max(
-      ...recent.map((c) => c.high)
-    ),
-  };
-}
-
-// ================= GOLD =================
-
 async function getGoldPrice() {
-
-  const res = await fetch(
-    "https://api.gold-api.com/price/XAU"
-  );
-
+  const res = await fetch("https://api.gold-api.com/price/XAU");
   const data = await res.json();
 
   if (!data || !data.price) {
-    throw new Error(
-      "Không lấy được giá vàng"
-    );
+    throw new Error("Không lấy được giá vàng");
   }
 
   return Number(data.price);
 }
 
-// ================= MARKET CONTEXT =================
+// ================= INDICATORS =================
 
-async function getMarketContext(symbol) {
+function ema(values, period) {
+  if (!values || values.length < period) return null;
 
-  // ===== GOLD =====
+  const k = 2 / (period + 1);
+  let result = values[0];
 
-  if (symbol === "XAUUSD") {
+  for (let i = 1; i < values.length; i++) {
+    result = values[i] * k + result * (1 - k);
+  }
 
-    const price =
-      await getGoldPrice();
+  return result;
+}
 
+function rsi(values, period = 14) {
+  if (!values || values.length <= period) return null;
+
+  let gains = 0;
+  let losses = 0;
+
+  for (let i = values.length - period; i < values.length; i++) {
+    const diff = values[i] - values[i - 1];
+
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
+
+  if (losses === 0) return 100;
+
+  const rs = gains / losses;
+  return 100 - 100 / (1 + rs);
+}
+
+function macd(values) {
+  if (!values || values.length < 35) {
     return {
-      symbol: "XAUUSD",
-      timeframe: "H1",
-      price,
-      ema20: null,
-      ema50: null,
-      ema200: null,
-      rsi14: null,
-      support: price - 20,
-      resistance: price + 20,
+      macdLine: null,
+      signalLine: null,
+      histogram: null,
     };
   }
 
-  // ===== BINANCE =====
+  const ema12 = [];
+  const ema26 = [];
 
-  const candles =
-    await getBinanceKlines(
-      symbol,
-      "1h",
-      200
-    );
+  for (let i = 26; i <= values.length; i++) {
+    ema12.push(ema(values.slice(0, i), 12));
+    ema26.push(ema(values.slice(0, i), 26));
+  }
 
-  const closes =
-    candles.map((c) => c.close);
+  const macdLineArr = ema12.map((v, i) => v - ema26[i]);
+  const signalLine = ema(macdLineArr, 9);
+  const macdLine = macdLineArr[macdLineArr.length - 1];
+  const histogram = macdLine - signalLine;
 
-  const last =
-    candles[candles.length - 1];
+  return { macdLine, signalLine, histogram };
+}
 
-  const ema20 = ema(
-    closes.slice(-80),
-    20
-  );
-
-  const ema50 = ema(
-    closes.slice(-120),
-    50
-  );
-
-  const ema200 = ema(
-    closes,
-    200
-  );
-
-  const rsi14 = rsi(
-    closes,
-    14
-  );
-
-  const {
-    support,
-    resistance,
-  } =
-    findSupportResistance(
-      candles
-    );
+function findSupportResistance(candles) {
+  const recent = candles.slice(-80);
 
   return {
-    symbol,
-    timeframe: "H1",
+    support: Math.min(...recent.map((c) => c.low)),
+    resistance: Math.max(...recent.map((c) => c.high)),
+  };
+}
+
+function avgVolume(candles, period = 20) {
+  const recent = candles.slice(-period);
+  const sum = recent.reduce((acc, c) => acc + c.volume, 0);
+  return sum / recent.length;
+}
+
+function analyzeTimeframe(candles, label) {
+  const closes = candles.map((c) => c.close);
+  const last = candles[candles.length - 1];
+
+  const ema20 = ema(closes.slice(-80), 20);
+  const ema50 = ema(closes.slice(-120), 50);
+  const ema200 = ema(closes, 200);
+  const rsi14 = rsi(closes, 14);
+  const macdData = macd(closes);
+  const { support, resistance } = findSupportResistance(candles);
+  const avgVol20 = avgVolume(candles, 20);
+
+  return {
+    tf: label,
     price: last.close,
     ema20,
     ema50,
     ema200,
     rsi14,
+    macdLine: macdData.macdLine,
+    macdSignal: macdData.signalLine,
+    macdHist: macdData.histogram,
+    volume: last.volume,
+    avgVol20,
     support,
     resistance,
+  };
+}
+
+// ================= CONTEXT =================
+
+async function getMarketContext(symbol) {
+  if (symbol === "XAUUSD") {
+    const price = await getGoldPrice();
+
+    return {
+      symbol: "XAUUSD",
+      note: "XAU dùng giá tham khảo, chưa có EMA/RSI/MACD đầy đủ.",
+      frames: [
+        {
+          tf: "H1",
+          price,
+          ema20: null,
+          ema50: null,
+          ema200: null,
+          rsi14: null,
+          macdLine: null,
+          macdSignal: null,
+          macdHist: null,
+          volume: null,
+          avgVol20: null,
+          support: price - 20,
+          resistance: price + 20,
+        },
+      ],
+    };
+  }
+
+  if (symbol === "USOIL") {
+    throw new Error("Dầu chưa có nguồn dữ liệu ổn định trong bản này.");
+  }
+
+  const [h1, h4, d1] = await Promise.all([
+    getBinanceKlines(symbol, "1h", 250),
+    getBinanceKlines(symbol, "4h", 250),
+    getBinanceKlines(symbol, "1d", 250),
+  ]);
+
+  return {
+    symbol,
+    note: "",
+    frames: [
+      analyzeTimeframe(h1, "H1"),
+      analyzeTimeframe(h4, "H4"),
+      analyzeTimeframe(d1, "D1"),
+    ],
   };
 }
 
 // ================= FORMAT =================
 
 function fmt(n) {
-
-  if (
-    n === null ||
-    n === undefined ||
-    Number.isNaN(Number(n))
-  ) {
-    return "N/A";
-  }
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return "N/A";
 
   const num = Number(n);
 
-  if (num >= 1000) {
-    return num.toFixed(2);
-  }
-
-  if (num >= 1) {
-    return num.toFixed(4);
-  }
-
+  if (num >= 1000) return num.toFixed(2);
+  if (num >= 1) return num.toFixed(4);
   return num.toFixed(8);
+}
+
+function frameText(f) {
+  return `
+[${f.tf}]
+- Giá: ${fmt(f.price)}
+- EMA20: ${fmt(f.ema20)}
+- EMA50: ${fmt(f.ema50)}
+- EMA200: ${fmt(f.ema200)}
+- RSI14: ${fmt(f.rsi14)}
+- MACD: ${fmt(f.macdLine)}
+- MACD Signal: ${fmt(f.macdSignal)}
+- MACD Hist: ${fmt(f.macdHist)}
+- Volume: ${fmt(f.volume)}
+- AvgVol20: ${fmt(f.avgVol20)}
+- Support: ${fmt(f.support)}
+- Resistance: ${fmt(f.resistance)}
+`;
 }
 
 // ================= OPENAI =================
 
-async function askChatGPT(
-  userMessage,
-  symbol
-) {
-
-  const data =
-    await getMarketContext(
-      symbol
-    );
+async function askChatGPT(userMessage, symbol) {
+  const data = await getMarketContext(symbol);
 
   const marketContext = `
-DỮ LIỆU:
+DỮ LIỆU MARKET:
+Symbol: ${data.symbol}
+Ghi chú: ${data.note || "Không có"}
 
-- Symbol: ${data.symbol}
-- Giá: ${fmt(data.price)}
-- EMA20: ${fmt(data.ema20)}
-- EMA50: ${fmt(data.ema50)}
-- EMA200: ${fmt(data.ema200)}
-- RSI14: ${fmt(data.rsi14)}
-- Support: ${fmt(data.support)}
-- Resistance: ${fmt(data.resistance)}
+${data.frames.map(frameText).join("\n")}
 
 Yêu cầu:
-- Chỉ chọn 1 hướng:
-LONG hoặc SHORT hoặc CHỜ.
-- Không được đưa cả 2.
+- Ưu tiên xu hướng D1 và H4.
+- Dùng H1 để chọn vùng Entry.
+- Chỉ chọn 1 hướng: LONG hoặc SHORT hoặc CHỜ.
+- Nếu chọn LONG/SHORT phải có Entry, SL, TP1, TP2.
+- Không đưa cả hai kịch bản.
 - Trả lời ngắn gọn.
 `;
 
-  const response =
-    await openai.responses.create({
-      model: AI_MODEL,
-
-      instructions:
-        SYSTEM_PROMPT,
-
-      input: `
-User:
+  const response = await openai.responses.create({
+    model: AI_MODEL,
+    instructions: SYSTEM_PROMPT,
+    input: `
+User hỏi:
 ${userMessage}
 
 ${marketContext}
 `,
+    max_output_tokens: 450,
+  });
 
-      max_output_tokens: 350,
-    });
-
-  return (
-    response.output_text ||
-    "Bot chưa phân tích được."
-  );
+  return response.output_text || "Bot chưa phân tích được.";
 }
 
-// ================= COMMAND =================
+// ================= COMMANDS =================
 
 bot.start(async (ctx) => {
+  await ctx.reply("AI Market Bot Online ✅");
+});
+
+bot.command("ping", async (ctx) => {
+  await ctx.reply("pong ✅");
+});
+
+bot.command("on", async (ctx) => {
+  if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
+
+  BOT_ENABLED = true;
+  await ctx.reply("Bot đã bật ✅");
+});
+
+bot.command("off", async (ctx) => {
+  if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
+
+  BOT_ENABLED = false;
+  await ctx.reply("Bot đã tắt trả lời phân tích ⛔");
+});
+
+bot.command("status", async (ctx) => {
   await ctx.reply(
-    "AI Market Bot Online ✅"
+    `Bot status: ${BOT_ENABLED ? "ON ✅" : "OFF ⛔"}\n` +
+      `Cooldown: ${USER_COOLDOWN_MS / 1000}s/user\n` +
+      `Model: ${AI_MODEL}`
   );
 });
 
-bot.command(
-  "ping",
-  async (ctx) => {
-    await ctx.reply("pong ✅");
-  }
-);
-
 // ================= MAIN =================
 
-bot.on(
-  "text",
-  async (ctx) => {
+bot.on("text", async (ctx) => {
+  try {
+    const text = ctx.message.text;
 
-    try {
+    if (!text) return;
+    if (text.startsWith("/")) return;
 
-      const text =
-        ctx.message.text;
+    if (!BOT_ENABLED) return;
 
-      if (!text) return;
+    const lower = text.toLowerCase();
 
-      // bỏ command
+    if (!lower.includes("bot")) return;
 
-      if (
-        text.startsWith("/")
-      ) {
-        return;
-      }
+    const userId = String(ctx.from?.id || "unknown");
+    const now = Date.now();
+    const lastTime = userCooldown.get(userId) || 0;
 
-      const lower =
-        text.toLowerCase();
-
-      // phải có chữ bot
-
-      if (
-        !lower.includes("bot")
-      ) {
-        return;
-      }
-
-      // detect symbol
-
-      const symbol =
-        await detectSymbol(
-          text
-        );
-
-      // không có coin
-
-      if (!symbol) {
-        return;
-      }
-
-      await ctx.sendChatAction(
-        "typing"
-      );
-
-      const answer =
-        await askChatGPT(
-          text,
-          symbol
-        );
-
-      await ctx.reply(
-        answer,
-        {
-          reply_to_message_id:
-            ctx.message.message_id,
-        }
-      );
-
-    } catch (error) {
-
-      console.error(
-        "BOT_ERROR:",
-        error
-      );
-
-      await ctx.reply(
-        "Bot lỗi tạm thời."
-      );
+    if (now - lastTime < USER_COOLDOWN_MS) {
+      const wait = Math.ceil((USER_COOLDOWN_MS - (now - lastTime)) / 1000);
+      return ctx.reply(`Chờ ${wait}s nữa rồi hỏi tiếp nhé.`);
     }
+
+    userCooldown.set(userId, now);
+
+    const symbol = await detectSymbol(text);
+    if (!symbol) return;
+
+    await ctx.sendChatAction("typing");
+
+    const answer = await askChatGPT(text, symbol);
+
+    await ctx.reply(answer, {
+      reply_to_message_id: ctx.message.message_id,
+    });
+  } catch (error) {
+    console.error("BOT_ERROR:", error);
+    await ctx.reply("Bot lỗi tạm thời.");
   }
-);
+});
 
 // ================= EXPRESS =================
 
-app.get(
-  "/",
-  (_req, res) => {
-    res.send(
-      "AI Market Bot Running"
-    );
-  }
-);
+app.get("/", (_req, res) => {
+  res.send("AI Market Bot Running");
+});
 
-app.get(
-  "/health",
-  (_req, res) => {
-    res.json({
-      ok: true,
-    });
-  }
-);
+app.get("/health", (_req, res) => {
+  res.json({
+    ok: true,
+    bot: BOT_ENABLED ? "ON" : "OFF",
+  });
+});
 
 // ================= START =================
 
 app.listen(PORT, () => {
-
-  console.log(
-    `Server running on port ${PORT}`
-  );
+  console.log(`Server running on port ${PORT}`);
 });
-bot.launch()
+
+bot
+  .launch()
   .then(() => {
     console.log("Telegram AI Market Bot launched");
   })
@@ -665,12 +537,5 @@ bot.launch()
     console.error("BOT_LAUNCH_ERROR:", err);
   });
 
-process.once(
-  "SIGINT",
-  () => bot.stop("SIGINT")
-);
-
-process.once(
-  "SIGTERM",
-  () => bot.stop("SIGTERM")
-);
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
