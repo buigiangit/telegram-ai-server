@@ -657,12 +657,13 @@ app.listen(PORT, () => {
     `Server running on port ${PORT}`
   );
 });
-
-bot.launch();
-
-console.log(
-  "Telegram AI Market Bot launched"
-);
+bot.launch()
+  .then(() => {
+    console.log("Telegram AI Market Bot launched");
+  })
+  .catch((err) => {
+    console.error("BOT_LAUNCH_ERROR:", err);
+  });
 
 process.once(
   "SIGINT",
