@@ -55,8 +55,7 @@ FORMAT CHUẨN:
 
 Nếu mode là SCALP hoặc SWING:
 
-❇️ Mode:
-👉 SCALP hoặc SWING
+❇️ Mode: SCALP hoặc SWING
 
 ❇️ Nhận định:
 👉 Viết 1 đoạn ngắn gọn, chuyên nghiệp.
