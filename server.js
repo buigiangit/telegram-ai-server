@@ -34,8 +34,10 @@ Bạn là AI phân tích crypto và thị trường cho cộng đồng trader.
 
 Quy tắc:
 - Trả lời ngắn gọn, thực chiến.
-- Dựa trên dữ liệu H1, H4, D1 được cung cấp.
-- Ưu tiên xu hướng H4 và D1, dùng H1 để tìm entry.
+- Phải phân biệt rõ mode SCALP hoặc SWING nếu user có yêu cầu.
+- SCALP: ưu tiên M15 và H1, entry sát, TP ngắn, phản ứng nhanh.
+- SWING: ưu tiên H4 và D1, entry rộng hơn, TP xa hơn, bỏ nhiễu ngắn hạn.
+- DEFAULT: dùng H1, H4, D1.
 - Dùng EMA20, EMA50, EMA200, RSI14, MACD, volume, hỗ trợ và kháng cự.
 - Chỉ chọn 1 hướng: LONG hoặc SHORT hoặc CHỜ.
 - Không được đưa cả LONG và SHORT cùng lúc.
@@ -44,6 +46,9 @@ Quy tắc:
 - Không khuyến khích all-in, gồng lỗ hoặc đòn bẩy cao.
 
 Format trả lời tối đa 10 dòng:
+
+❇️ Mode:
+👉 SCALP / SWING / DEFAULT
 
 ❇️ Nhận định:
 👉 ...
@@ -59,6 +64,87 @@ Format trả lời tối đa 10 dòng:
 ⚠️ Tham khảo, không phải lời khuyên đầu tư.
 `;
 
+// ================= MODE =================
+
+function detectTradeMode(text) {
+  const lower = String(text || "").toLowerCase();
+
+  if (
+    lower.includes("scalp") ||
+    lower.includes("scalping") ||
+    lower.includes("lướt") ||
+    lower.includes("luot") ||
+    lower.includes("đánh nhanh") ||
+    lower.includes("danh nhanh")
+  ) {
+    return "SCALP";
+  }
+
+  if (
+    lower.includes("swing") ||
+    lower.includes("trung hạn") ||
+    lower.includes("trung han") ||
+    lower.includes("giữ lệnh") ||
+    lower.includes("giu lenh")
+  ) {
+    return "SWING";
+  }
+
+  return "DEFAULT";
+}
+
+function getModeConfig(mode) {
+  if (mode === "SCALP") {
+    return {
+      mode: "SCALP",
+      intervals: [
+        { interval: "15m", label: "M15" },
+        { interval: "1h", label: "H1" },
+      ],
+      rule: `
+MODE SCALP:
+- Ưu tiên xu hướng H1.
+- Dùng M15 để chọn Entry.
+- Entry phải sát vùng hỗ trợ/kháng cự gần.
+- TP ngắn hơn, SL chặt hơn.
+- Nếu giá đang giữa range, ưu tiên CHỜ.
+`,
+    };
+  }
+
+  if (mode === "SWING") {
+    return {
+      mode: "SWING",
+      intervals: [
+        { interval: "4h", label: "H4" },
+        { interval: "1d", label: "D1" },
+      ],
+      rule: `
+MODE SWING:
+- Ưu tiên xu hướng D1.
+- Dùng H4 để chọn Entry.
+- Entry có thể rộng hơn.
+- TP xa hơn, SL rộng hơn.
+- Bỏ nhiễu ngắn hạn M15/H1.
+`,
+    };
+  }
+
+  return {
+    mode: "DEFAULT",
+    intervals: [
+      { interval: "1h", label: "H1" },
+      { interval: "4h", label: "H4" },
+      { interval: "1d", label: "D1" },
+    ],
+    rule: `
+MODE DEFAULT:
+- Ưu tiên xu hướng D1 và H4.
+- Dùng H1 để chọn vùng Entry.
+`,
+  };
+}
+
 // ================= ADMIN =================
 
 function isAdmin(ctx) {
@@ -68,7 +154,6 @@ function isAdmin(ctx) {
     .filter(Boolean);
 
   if (adminIds.length === 0) return true;
-
   return adminIds.includes(String(ctx.from?.id));
 }
 
@@ -168,6 +253,9 @@ async function detectSymbol(text) {
     "GIUP",
     "GIÚP",
     "XEM",
+    "SCALP",
+    "SCALPING",
+    "SWING",
   ];
 
   for (const word of words) {
@@ -321,16 +409,20 @@ function analyzeTimeframe(candles, label) {
 
 // ================= CONTEXT =================
 
-async function getMarketContext(symbol) {
+async function getMarketContext(symbol, mode = "DEFAULT") {
+  const modeConfig = getModeConfig(mode);
+
   if (symbol === "XAUUSD") {
     const price = await getGoldPrice();
 
     return {
       symbol: "XAUUSD",
+      mode: modeConfig.mode,
+      modeRule: modeConfig.rule,
       note: "XAU dùng giá tham khảo, chưa có EMA/RSI/MACD đầy đủ.",
       frames: [
         {
-          tf: "H1",
+          tf: modeConfig.mode === "SCALP" ? "M15/H1 proxy" : "H1 proxy",
           price,
           ema20: null,
           ema50: null,
@@ -352,20 +444,23 @@ async function getMarketContext(symbol) {
     throw new Error("Dầu chưa có nguồn dữ liệu ổn định trong bản này.");
   }
 
-  const [h1, h4, d1] = await Promise.all([
-    getBinanceKlines(symbol, "1h", 250),
-    getBinanceKlines(symbol, "4h", 250),
-    getBinanceKlines(symbol, "1d", 250),
-  ]);
+  const candleResults = await Promise.all(
+    modeConfig.intervals.map((item) =>
+      getBinanceKlines(symbol, item.interval, 250).then((candles) => ({
+        label: item.label,
+        candles,
+      }))
+    )
+  );
 
   return {
     symbol,
+    mode: modeConfig.mode,
+    modeRule: modeConfig.rule,
     note: "",
-    frames: [
-      analyzeTimeframe(h1, "H1"),
-      analyzeTimeframe(h4, "H4"),
-      analyzeTimeframe(d1, "D1"),
-    ],
+    frames: candleResults.map((item) =>
+      analyzeTimeframe(item.candles, item.label)
+    ),
   };
 }
 
@@ -401,19 +496,23 @@ function frameText(f) {
 
 // ================= OPENAI =================
 
-async function askChatGPT(userMessage, symbol) {
-  const data = await getMarketContext(symbol);
+async function askChatGPT(userMessage, symbol, mode) {
+  const data = await getMarketContext(symbol, mode);
 
   const marketContext = `
 DỮ LIỆU MARKET:
 Symbol: ${data.symbol}
+Mode: ${data.mode}
 Ghi chú: ${data.note || "Không có"}
+
+${data.modeRule}
 
 ${data.frames.map(frameText).join("\n")}
 
 Yêu cầu:
-- Ưu tiên xu hướng D1 và H4.
-- Dùng H1 để chọn vùng Entry.
+- Bắt buộc trả lời theo đúng Mode: ${data.mode}.
+- Nếu Mode SCALP: dùng khung nhỏ để Entry, TP/SL ngắn.
+- Nếu Mode SWING: dùng khung lớn để Entry, TP/SL rộng hơn.
 - Chỉ chọn 1 hướng: LONG hoặc SHORT hoặc CHỜ.
 - Nếu chọn LONG/SHORT phải có Entry, SL, TP1, TP2.
 - Không đưa cả hai kịch bản.
@@ -496,9 +595,11 @@ bot.on("text", async (ctx) => {
     const symbol = await detectSymbol(text);
     if (!symbol) return;
 
+    const mode = detectTradeMode(text);
+
     await ctx.sendChatAction("typing");
 
-    const answer = await askChatGPT(text, symbol);
+    const answer = await askChatGPT(text, symbol, mode);
 
     await ctx.reply(answer, {
       reply_to_message_id: ctx.message.message_id,
