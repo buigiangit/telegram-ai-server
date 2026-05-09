@@ -7,7 +7,7 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
-//
+
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3001;
@@ -31,109 +31,55 @@ let BINANCE_SYMBOL_CACHE_TIME = 0;
 // ================= PROMPT =================
 
 const SYSTEM_PROMPT = `
-Bạn là AI phân tích crypto cho cộng đồng trader futures.
+Bạn là AI phân tích crypto futures cho cộng đồng trader.
 
-Mục tiêu:
-- Phân tích thực chiến.
-- Đưa ra bias rõ ràng.
-- Không quá an toàn.
-- Không lạm dụng CHỜ.
-- Ưu tiên LONG hoặc SHORT nếu technical có lợi thế rõ.
+Phong cách:
+- Ngắn gọn, thực chiến.
+- Không lan man.
+- Không học thuật.
+- Không dùng markdown ###.
+- Không đưa cả Long và Short cùng lúc.
+- Chỉ chọn 1 hướng: Long, Short hoặc Chờ.
+- Không lạm dụng Chờ nếu hệ thống đã có bias rõ.
+
+Hệ phân tích chính:
+- EMA34, EMA89, EMA200, EMA610.
+- Sonic R: Dragon EMA34, trend EMA89, trend lớn EMA200/EMA610.
+- Volume, RSI, MACD, ATR.
+- Funding và Open Interest là yếu tố phụ để xác nhận futures sentiment.
+- Entry/SL/TP ưu tiên theo dữ liệu suggested từ hệ thống.
 
 Quy tắc:
-- Trả lời ngắn gọn, chuyên nghiệp.
-- Chỉ chọn 1 hướng: LONG hoặc SHORT hoặc CHỜ.
-- Không được đưa cả LONG và SHORT cùng lúc.
-- Không lan man.
-- Không giải thích kiểu học thuật.
-- Không dùng markdown ###.
-- Không dùng code block.
-- Không nói kiểu AI chung chung.
+- Nếu Bias hệ thống là LONG và RR hợp lý thì ưu tiên Long.
+- Nếu Bias hệ thống là SHORT và RR hợp lý thì ưu tiên Short.
+- Nếu RR xấu, giá giữa range, tín hiệu mâu thuẫn mạnh thì chọn Chờ.
+- Nếu chọn Chờ thì không ghi Entry/SL/TP.
 
-Mode:
-- Nếu mode là DEFAULT thì KHÔNG ghi mục Mode.
-- Nếu mode là SCALP hoặc SWING thì phải hiện Mode.
+FORMAT BẮT BUỘC:
 
-SCALP:
-- Ưu tiên M15/H1.
-- Entry sát hỗ trợ kháng cự.
-- TP ngắn.
-- Phản ứng nhanh theo EMA20/EMA50.
-- Có thể vào lệnh aggressive hơn.
-
-SWING:
-- Ưu tiên H4/D1.
-- Entry rộng hơn.
-- TP xa hơn.
-- Bỏ nhiễu ngắn hạn.
-- Ưu tiên xu hướng lớn.
-
-Indicator ưu tiên:
-- EMA20
-- EMA50
-- EMA200
-- RSI
-- MACD
-- Volume
-- Hỗ trợ kháng cự
-- Funding
-- Open Interest
-
-Quy tắc Funding/OI:
-- Funding và OI chỉ là yếu tố PHỤ để xác nhận tâm lý futures.
-- Không được chỉ vì Funding/OI trung tính mà chuyển sang CHỜ.
-- Nếu technical đẹp thì vẫn ưu tiên LONG hoặc SHORT.
-- Funding dương cao: cẩn thận long squeeze.
-- Funding âm sâu: cẩn thận short squeeze.
-- Giá tăng + OI tăng: xu hướng tăng được hỗ trợ.
-- Giá tăng + OI giảm: đà tăng yếu hơn.
-- Giá giảm + OI tăng: áp lực short mạnh hơn.
-- Giá giảm + OI giảm: xu hướng giảm yếu dần.
-
-Quy tắc chọn CHỜ:
-- CHỈ chọn CHỜ khi sideway quá hẹp, volume quá yếu, tín hiệu mâu thuẫn mạnh hoặc giá đứng giữa range không có lợi thế RR.
-- Không lạm dụng CHỜ.
-- Nếu market có bias rõ thì phải nghiêng LONG hoặc SHORT.
-
-Quy tắc LONG/SHORT:
-- Nếu LONG hoặc SHORT: bắt buộc có Entry, SL, TP1, TP2.
-- Entry phải hợp lý theo hỗ trợ kháng cự gần nhất.
-- Không đặt Entry vô lý quá xa giá hiện tại.
-- SL phải logic theo cấu trúc giá.
-- TP phải hợp lý theo RR.
-
-Nếu chọn CHỜ:
-- Không ghi Entry/SL/TP.
-- Chỉ ghi lý do chờ và vùng cần xác nhận.
-
-FORMAT:
-
-Nếu mode là SCALP hoặc SWING:
-
-❇️ Mode:
-👉 SCALP hoặc SWING
+Nếu Long hoặc Short:
 
 ❇️ Nhận định:
-👉 Viết ngắn gọn, thực chiến, dễ hiểu.
+👉 Viết 2-3 câu ngắn, có EMA/Sonic R, OI/Funding/Volume nếu có ý nghĩa.
 
-❗️Khuyến nghị:
-🔵 Long
+❗️Khuyến nghị: 🔵 Long
 hoặc
-🔴 Short
-hoặc
-🟡 Chờ
+❗️Khuyến nghị: 🔴 Short
 
-Nếu là LONG hoặc SHORT:
+🔹Entry: ...
+🔹SL: ...
+🔹TP: ...
 
-👉 Entry:
-👉 SL:
-👉 TP1:
-👉 TP2:
+⚠️ Tham khảo, không phải lời khuyên đầu tư.
 
-Nếu mode là DEFAULT:
-- KHÔNG hiện mục Mode.
+Nếu Chờ:
 
-Dòng cuối luôn là:
+❇️ Nhận định:
+👉 Viết 2-3 câu ngắn, giải thích vì sao chưa có lợi thế.
+
+❗️Khuyến nghị: 🟡 Chờ
+
+🔹Vùng chờ: ...
 
 ⚠️ Tham khảo, không phải lời khuyên đầu tư.
 `;
@@ -182,15 +128,9 @@ function getModeConfig(mode) {
         { interval: "15m", label: "M15" },
         { interval: "1h", label: "H1" },
       ],
-      rule: `
-MODE SCALP:
-- Ưu tiên xu hướng H1.
-- Dùng M15 để chọn Entry.
-- Entry phải sát vùng hỗ trợ/kháng cự gần.
-- TP ngắn hơn, SL chặt hơn.
-- Funding/OI dùng để tránh vào lệnh ngược đám đông quá nóng.
-- Nếu giá đang giữa range, chỉ CHỜ khi thật sự không có lợi thế RR.
-`,
+      primaryTf: "M15",
+      trendTf: "H1",
+      rule: "SCALP: dùng H1 lấy trend, M15 chọn entry. TP ngắn, SL chặt.",
     };
   }
 
@@ -201,15 +141,9 @@ MODE SCALP:
         { interval: "4h", label: "H4" },
         { interval: "1d", label: "D1" },
       ],
-      rule: `
-MODE SWING:
-- Ưu tiên xu hướng D1.
-- Dùng H4 để chọn Entry.
-- Entry có thể rộng hơn.
-- TP xa hơn, SL rộng hơn.
-- Funding/OI dùng để xác nhận dòng tiền futures.
-- Bỏ nhiễu ngắn hạn M15/H1.
-`,
+      primaryTf: "H4",
+      trendTf: "D1",
+      rule: "SWING: dùng D1 lấy trend lớn, H4 chọn entry. TP xa hơn, SL rộng hơn.",
     };
   }
 
@@ -220,12 +154,9 @@ MODE SWING:
       { interval: "4h", label: "H4" },
       { interval: "1d", label: "D1" },
     ],
-    rule: `
-MODE DEFAULT:
-- Ưu tiên xu hướng D1 và H4.
-- Dùng H1 để chọn vùng Entry.
-- Funding/OI dùng để đánh giá tâm lý futures.
-`,
+    primaryTf: "H1",
+    trendTf: "H4",
+    rule: "DEFAULT: dùng H4/D1 lấy trend, H1 chọn entry.",
   };
 }
 
@@ -277,14 +208,8 @@ async function detectSymbol(text) {
   const upper = text.toUpperCase();
 
   const specialMap = [
-    {
-      keywords: ["XAU", "GOLD", "VANG", "VÀNG"],
-      symbol: "XAUUSD",
-    },
-    {
-      keywords: ["OIL", "DAU", "DẦU", "WTI", "USOIL"],
-      symbol: "USOIL",
-    },
+    { keywords: ["XAU", "GOLD", "VANG", "VÀNG"], symbol: "XAUUSD" },
+    { keywords: ["OIL", "DAU", "DẦU", "WTI", "USOIL"], symbol: "USOIL" },
   ];
 
   for (const item of specialMap) {
@@ -305,48 +230,17 @@ async function detectSymbol(text) {
   const words = upper.match(/\b[A-Z0-9]{2,15}\b/g) || [];
 
   const ignoreWords = [
-    "BOT",
-    "AI",
-    "LONG",
-    "SHORT",
-    "BUY",
-    "SELL",
-    "ENTRY",
-    "TP",
-    "TP1",
-    "TP2",
-    "SL",
-    "STOP",
-    "LOSS",
-    "SAO",
-    "ROI",
-    "RỒI",
-    "HOM",
-    "HÔM",
-    "NAY",
-    "PHAN",
-    "PHÂN",
-    "TICH",
-    "TÍCH",
-    "CO",
-    "CÓ",
-    "DUOC",
-    "ĐƯỢC",
-    "KHONG",
-    "KHÔNG",
-    "GIUP",
-    "GIÚP",
-    "XEM",
-    "SCALP",
-    "SCALPING",
-    "SWING",
+    "BOT", "AI", "LONG", "SHORT", "BUY", "SELL", "ENTRY", "TP", "TP1", "TP2",
+    "SL", "STL", "STOP", "LOSS", "ROI", "SAO", "ROI", "RỒI", "HOM", "HÔM",
+    "NAY", "PHAN", "PHÂN", "TICH", "TÍCH", "CO", "CÓ", "DUOC", "ĐƯỢC",
+    "KHONG", "KHÔNG", "GIUP", "GIÚP", "XEM", "SCALP", "SCALPING", "SWING",
+    "EMA", "SONIC", "FUNDING", "OI",
   ];
 
   for (const word of words) {
     if (ignoreWords.includes(word)) continue;
 
     const pair = `${word}USDT`;
-
     if (binanceSymbols.includes(pair)) return pair;
   }
 
@@ -355,7 +249,7 @@ async function detectSymbol(text) {
 
 // ================= MARKET DATA =================
 
-async function getBinanceKlines(symbol, interval = "1h", limit = 250) {
+async function getBinanceKlines(symbol, interval = "1h", limit = 800) {
   const url =
     `https://api.binance.com/api/v3/klines` +
     `?symbol=${symbol}&interval=${interval}&limit=${limit}`;
@@ -387,7 +281,6 @@ async function getFundingRate(symbol) {
     const data = await res.json();
 
     if (!Array.isArray(data) || !data.length) return null;
-
     return Number(data[0].fundingRate);
   } catch (error) {
     console.error("FUNDING_ERROR:", error);
@@ -405,7 +298,6 @@ async function getOpenInterest(symbol) {
     const data = await res.json();
 
     if (!data || data.openInterest === undefined) return null;
-
     return Number(data.openInterest);
   } catch (error) {
     console.error("OI_ERROR:", error);
@@ -489,11 +381,7 @@ function rsi(values, period = 14) {
 
 function macd(values) {
   if (!values || values.length < 35) {
-    return {
-      macdLine: null,
-      signalLine: null,
-      histogram: null,
-    };
+    return { macdLine: null, signalLine: null, histogram: null };
   }
 
   const ema12 = [];
@@ -512,47 +400,395 @@ function macd(values) {
   return { macdLine, signalLine, histogram };
 }
 
-function findSupportResistance(candles) {
-  const recent = candles.slice(-80);
+function atr(candles, period = 14) {
+  if (!candles || candles.length <= period) return null;
 
-  return {
-    support: Math.min(...recent.map((c) => c.low)),
-    resistance: Math.max(...recent.map((c) => c.high)),
-  };
+  const trs = [];
+
+  for (let i = 1; i < candles.length; i++) {
+    const high = candles[i].high;
+    const low = candles[i].low;
+    const prevClose = candles[i - 1].close;
+
+    const tr = Math.max(
+      high - low,
+      Math.abs(high - prevClose),
+      Math.abs(low - prevClose)
+    );
+
+    trs.push(tr);
+  }
+
+  const recent = trs.slice(-period);
+  return recent.reduce((sum, v) => sum + v, 0) / recent.length;
 }
 
 function avgVolume(candles, period = 20) {
   const recent = candles.slice(-period);
+  if (!recent.length) return null;
   const sum = recent.reduce((acc, c) => acc + c.volume, 0);
   return sum / recent.length;
+}
+
+function findSwingLevels(candles, lookback = 120, pivot = 2) {
+  const recent = candles.slice(-lookback);
+  const supports = [];
+  const resistances = [];
+
+  for (let i = pivot; i < recent.length - pivot; i++) {
+    const c = recent[i];
+
+    let isSwingLow = true;
+    let isSwingHigh = true;
+
+    for (let j = i - pivot; j <= i + pivot; j++) {
+      if (j === i) continue;
+      if (recent[j].low <= c.low) isSwingLow = false;
+      if (recent[j].high >= c.high) isSwingHigh = false;
+    }
+
+    if (isSwingLow) supports.push(c.low);
+    if (isSwingHigh) resistances.push(c.high);
+  }
+
+  return { supports, resistances };
+}
+
+function nearestLevels(candles, price) {
+  const { supports, resistances } = findSwingLevels(candles);
+
+  const below = supports
+    .filter((x) => x < price)
+    .sort((a, b) => Math.abs(price - a) - Math.abs(price - b));
+
+  const above = resistances
+    .filter((x) => x > price)
+    .sort((a, b) => Math.abs(price - a) - Math.abs(price - b));
+
+  const fallbackRecent = candles.slice(-80);
+
+  const fallbackSupport = Math.min(...fallbackRecent.map((c) => c.low));
+  const fallbackResistance = Math.max(...fallbackRecent.map((c) => c.high));
+
+  return {
+    support: below[0] || fallbackSupport,
+    resistance: above[0] || fallbackResistance,
+  };
+}
+
+function detectWave(candles) {
+  const recent = candles.slice(-40);
+  if (recent.length < 20) return "NEUTRAL";
+
+  const firstHalf = recent.slice(0, 20);
+  const secondHalf = recent.slice(20);
+
+  const firstHigh = Math.max(...firstHalf.map((c) => c.high));
+  const firstLow = Math.min(...firstHalf.map((c) => c.low));
+  const secondHigh = Math.max(...secondHalf.map((c) => c.high));
+  const secondLow = Math.min(...secondHalf.map((c) => c.low));
+
+  if (secondHigh > firstHigh && secondLow > firstLow) return "HH_HL";
+  if (secondHigh < firstHigh && secondLow < firstLow) return "LH_LL";
+
+  return "RANGE";
 }
 
 function analyzeTimeframe(candles, label) {
   const closes = candles.map((c) => c.close);
   const last = candles[candles.length - 1];
 
-  const ema20 = ema(closes.slice(-80), 20);
-  const ema50 = ema(closes.slice(-120), 50);
+  const ema34 = ema(closes, 34);
+  const ema89 = ema(closes, 89);
   const ema200 = ema(closes, 200);
+  const ema610 = ema(closes, 610);
   const rsi14 = rsi(closes, 14);
   const macdData = macd(closes);
-  const { support, resistance } = findSupportResistance(candles);
+  const atr14 = atr(candles, 14);
   const avgVol20 = avgVolume(candles, 20);
+  const { support, resistance } = nearestLevels(candles, last.close);
+  const wave = detectWave(candles);
 
   return {
     tf: label,
     price: last.close,
-    ema20,
-    ema50,
+    ema34,
+    ema89,
     ema200,
+    ema610,
     rsi14,
     macdLine: macdData.macdLine,
     macdSignal: macdData.signalLine,
     macdHist: macdData.histogram,
     volume: last.volume,
     avgVol20,
+    atr14,
     support,
     resistance,
+    wave,
+  };
+}
+
+// ================= SIGNAL ENGINE =================
+
+function pctDiff(a, b) {
+  if (!a || !b) return null;
+  return ((a - b) / b) * 100;
+}
+
+function getEmaStructure(f) {
+  const { price, ema34, ema89, ema200, ema610 } = f;
+
+  if (!ema34 || !ema89 || !ema200 || !ema610) return "UNKNOWN";
+
+  if (price > ema34 && ema34 > ema89 && ema89 > ema200 && ema200 > ema610) {
+    return "SUPER_BULL";
+  }
+
+  if (price > ema34 && ema34 > ema89 && price > ema200) {
+    return "BULL";
+  }
+
+  if (price < ema34 && ema34 < ema89 && ema89 < ema200 && ema200 < ema610) {
+    return "SUPER_BEAR";
+  }
+
+  if (price < ema34 && ema34 < ema89 && price < ema200) {
+    return "BEAR";
+  }
+
+  if (price > ema89 && price < ema200) return "MIXED_BETWEEN_EMA89_200";
+  if (price < ema89 && price > ema200) return "MIXED_BETWEEN_EMA89_200";
+
+  return "NEUTRAL";
+}
+
+function getMarketCondition(f) {
+  const structure = getEmaStructure(f);
+  const nearSupportPct = Math.abs(pctDiff(f.price, f.support) || 999);
+  const nearResistancePct = Math.abs(pctDiff(f.resistance, f.price) || 999);
+
+  if (structure === "SUPER_BULL" || structure === "BULL") {
+    if (f.price <= f.ema34 * 1.01 || nearSupportPct <= 0.6) {
+      return "PULLBACK_UPTREND";
+    }
+    return "UPTREND";
+  }
+
+  if (structure === "SUPER_BEAR" || structure === "BEAR") {
+    if (f.price >= f.ema34 * 0.99 || nearResistancePct <= 0.6) {
+      return "PULLBACK_DOWNTREND";
+    }
+    return "DOWNTREND";
+  }
+
+  return "SIDEWAY";
+}
+
+function scoreSignal(primary, trend, fundingRate, oiChangePct1h) {
+  let longScore = 0;
+  let shortScore = 0;
+  const reasons = [];
+
+  const structurePrimary = getEmaStructure(primary);
+  const structureTrend = trend ? getEmaStructure(trend) : "UNKNOWN";
+
+  if (["SUPER_BULL", "BULL"].includes(structurePrimary)) longScore += 2;
+  if (["SUPER_BEAR", "BEAR"].includes(structurePrimary)) shortScore += 2;
+
+  if (["SUPER_BULL", "BULL"].includes(structureTrend)) longScore += 2;
+  if (["SUPER_BEAR", "BEAR"].includes(structureTrend)) shortScore += 2;
+
+  if (primary.price > primary.ema34 && primary.ema34 > primary.ema89) longScore += 1.5;
+  if (primary.price < primary.ema34 && primary.ema34 < primary.ema89) shortScore += 1.5;
+
+  if (primary.price > primary.ema200) longScore += 0.8;
+  if (primary.price < primary.ema200) shortScore += 0.8;
+
+  if (primary.price > primary.ema610) longScore += 0.7;
+  if (primary.price < primary.ema610) shortScore += 0.7;
+
+  if (primary.rsi14 >= 52 && primary.rsi14 <= 72) longScore += 0.8;
+  if (primary.rsi14 <= 48 && primary.rsi14 >= 28) shortScore += 0.8;
+
+  if (primary.macdHist > 0) longScore += 0.7;
+  if (primary.macdHist < 0) shortScore += 0.7;
+
+  if (primary.volume > primary.avgVol20) {
+    if (primary.price > primary.ema34) longScore += 0.5;
+    if (primary.price < primary.ema34) shortScore += 0.5;
+  }
+
+  if (primary.wave === "HH_HL") longScore += 0.8;
+  if (primary.wave === "LH_LL") shortScore += 0.8;
+
+  if (oiChangePct1h !== null && oiChangePct1h !== undefined) {
+    if (oiChangePct1h > 0.5 && primary.price > primary.ema34) longScore += 0.4;
+    if (oiChangePct1h > 0.5 && primary.price < primary.ema34) shortScore += 0.4;
+  }
+
+  if (fundingRate !== null && fundingRate !== undefined) {
+    const fundingPct = fundingRate * 100;
+
+    if (fundingPct > 0.05) {
+      longScore -= 0.4;
+      reasons.push("Funding dương cao, cẩn thận long squeeze.");
+    }
+
+    if (fundingPct < -0.05) {
+      shortScore -= 0.4;
+      reasons.push("Funding âm sâu, cẩn thận short squeeze.");
+    }
+  }
+
+  longScore = Math.max(0, Math.min(10, longScore));
+  shortScore = Math.max(0, Math.min(10, shortScore));
+
+  let bias = "CHỜ";
+
+  if (longScore >= 5.5 && longScore - shortScore >= 1) bias = "LONG";
+  if (shortScore >= 5.5 && shortScore - longScore >= 1) bias = "SHORT";
+
+  return {
+    longScore: Number(longScore.toFixed(1)),
+    shortScore: Number(shortScore.toFixed(1)),
+    bias,
+    reasons,
+  };
+}
+
+function buildTradePlan(primary, signal) {
+  const price = primary.price;
+  const atrValue = primary.atr14 || price * 0.006;
+
+  const buffer = Math.max(atrValue * 0.15, price * 0.001);
+  const minStop = Math.max(atrValue * 0.7, price * 0.003);
+
+  if (signal.bias === "LONG") {
+    const support = primary.support;
+    const supportDistancePct = Math.abs(pctDiff(price, support) || 999);
+
+    let entryLow;
+    let entryHigh;
+
+    if (support && support < price && supportDistancePct <= 1.2) {
+      entryLow = support + buffer * 0.2;
+      entryHigh = Math.min(price, support + buffer * 1.5);
+    } else {
+      entryLow = price - price * 0.0035;
+      entryHigh = price - price * 0.001;
+    }
+
+    const entry = (entryLow + entryHigh) / 2;
+    const sl = Math.min(support - buffer, entry - minStop);
+    const risk = entry - sl;
+
+    const tp1 = entry + risk * 1.2;
+    const tp2 = entry + risk * 1.8;
+    const rr = (tp2 - entry) / risk;
+
+    return {
+      side: "LONG",
+      entryLow,
+      entryHigh,
+      sl,
+      tp1,
+      tp2,
+      rr,
+      riskLevel: rr >= 1.5 ? "Trung bình" : "Cao",
+    };
+  }
+
+  if (signal.bias === "SHORT") {
+    const resistance = primary.resistance;
+    const resistanceDistancePct = Math.abs(pctDiff(resistance, price) || 999);
+
+    let entryLow;
+    let entryHigh;
+
+    if (resistance && resistance > price && resistanceDistancePct <= 1.2) {
+      entryHigh = resistance - buffer * 0.2;
+      entryLow = Math.max(price, resistance - buffer * 1.5);
+    } else {
+      entryLow = price + price * 0.001;
+      entryHigh = price + price * 0.0035;
+    }
+
+    const entry = (entryLow + entryHigh) / 2;
+    const sl = Math.max(resistance + buffer, entry + minStop);
+    const risk = sl - entry;
+
+    const tp1 = entry - risk * 1.2;
+    const tp2 = entry - risk * 1.8;
+    const rr = (entry - tp2) / risk;
+
+    return {
+      side: "SHORT",
+      entryLow,
+      entryHigh,
+      sl,
+      tp1,
+      tp2,
+      rr,
+      riskLevel: rr >= 1.5 ? "Trung bình" : "Cao",
+    };
+  }
+
+  return {
+    side: "CHỜ",
+    waitZone: `Hỗ trợ ${fmt(primary.support)} / Kháng cự ${fmt(primary.resistance)}`,
+    riskLevel: "Cao",
+  };
+}
+
+function buildSignalEngine(data, modeConfig) {
+  const primary =
+    data.frames.find((f) => f.tf === modeConfig.primaryTf) || data.frames[0];
+
+  const trend =
+    data.frames.find((f) => f.tf === modeConfig.trendTf) ||
+    data.frames[data.frames.length - 1];
+
+  const signal = scoreSignal(
+    primary,
+    trend,
+    data.fundingRate,
+    data.oiChangePct1h
+  );
+
+  const marketCondition = getMarketCondition(primary);
+  const emaStructure = getEmaStructure(primary);
+  const plan = buildTradePlan(primary, signal);
+
+  if (plan.side !== "CHỜ" && plan.rr && plan.rr < 1.15) {
+    signal.bias = "CHỜ";
+    return {
+      primaryTf: primary.tf,
+      trendTf: trend?.tf || "N/A",
+      emaStructure,
+      marketCondition,
+      longScore: signal.longScore,
+      shortScore: signal.shortScore,
+      bias: "CHỜ",
+      reason: "RR chưa đẹp, không nên ép lệnh.",
+      plan: {
+        side: "CHỜ",
+        waitZone: `Chờ quanh hỗ trợ ${fmt(primary.support)} hoặc kháng cự ${fmt(primary.resistance)}`,
+        riskLevel: "Cao",
+      },
+    };
+  }
+
+  return {
+    primaryTf: primary.tf,
+    trendTf: trend?.tf || "N/A",
+    emaStructure,
+    marketCondition,
+    longScore: signal.longScore,
+    shortScore: signal.shortScore,
+    bias: signal.bias,
+    reason: signal.reasons.join(" ") || "Không có cảnh báo lớn.",
+    plan,
   };
 }
 
@@ -564,7 +800,26 @@ async function getMarketContext(symbol, mode = "DEFAULT") {
   if (symbol === "XAUUSD") {
     const price = await getGoldPrice();
 
-    return {
+    const frame = {
+      tf: modeConfig.primaryTf,
+      price,
+      ema34: null,
+      ema89: null,
+      ema200: null,
+      ema610: null,
+      rsi14: null,
+      macdLine: null,
+      macdSignal: null,
+      macdHist: null,
+      volume: null,
+      avgVol20: null,
+      atr14: price * 0.006,
+      support: price - 20,
+      resistance: price + 20,
+      wave: "NEUTRAL",
+    };
+
+    const data = {
       symbol: "XAUUSD",
       mode: modeConfig.mode,
       modeRule: modeConfig.rule,
@@ -572,23 +827,26 @@ async function getMarketContext(symbol, mode = "DEFAULT") {
       fundingRate: null,
       openInterest: null,
       oiChangePct1h: null,
-      frames: [
-        {
-          tf: modeConfig.mode === "SCALP" ? "M15/H1 proxy" : "H1 proxy",
-          price,
-          ema20: null,
-          ema50: null,
-          ema200: null,
-          rsi14: null,
-          macdLine: null,
-          macdSignal: null,
-          macdHist: null,
-          volume: null,
-          avgVol20: null,
-          support: price - 20,
-          resistance: price + 20,
+      frames: [frame],
+    };
+
+    return {
+      ...data,
+      engine: {
+        primaryTf: frame.tf,
+        trendTf: "N/A",
+        emaStructure: "UNKNOWN",
+        marketCondition: "UNKNOWN",
+        longScore: 0,
+        shortScore: 0,
+        bias: "CHỜ",
+        reason: "XAU chưa có đủ dữ liệu indicator trong bản này.",
+        plan: {
+          side: "CHỜ",
+          waitZone: `${fmt(price - 20)} - ${fmt(price + 20)}`,
+          riskLevel: "Cao",
         },
-      ],
+      },
     };
   }
 
@@ -602,14 +860,14 @@ async function getMarketContext(symbol, mode = "DEFAULT") {
       getOpenInterest(symbol),
       getOpenInterestStats(symbol),
       ...modeConfig.intervals.map((item) =>
-        getBinanceKlines(symbol, item.interval, 250).then((candles) => ({
+        getBinanceKlines(symbol, item.interval, 800).then((candles) => ({
           label: item.label,
           candles,
         }))
       ),
     ]);
 
-  return {
+  const data = {
     symbol,
     mode: modeConfig.mode,
     modeRule: modeConfig.rule,
@@ -620,6 +878,11 @@ async function getMarketContext(symbol, mode = "DEFAULT") {
     frames: candleResults.map((item) =>
       analyzeTimeframe(item.candles, item.label)
     ),
+  };
+
+  return {
+    ...data,
+    engine: buildSignalEngine(data, modeConfig),
   };
 }
 
@@ -644,17 +907,57 @@ function frameText(f) {
   return `
 [${f.tf}]
 - Giá: ${fmt(f.price)}
-- EMA20: ${fmt(f.ema20)}
-- EMA50: ${fmt(f.ema50)}
+- EMA34: ${fmt(f.ema34)}
+- EMA89: ${fmt(f.ema89)}
 - EMA200: ${fmt(f.ema200)}
+- EMA610: ${fmt(f.ema610)}
 - RSI14: ${fmt(f.rsi14)}
-- MACD: ${fmt(f.macdLine)}
-- MACD Signal: ${fmt(f.macdSignal)}
 - MACD Hist: ${fmt(f.macdHist)}
 - Volume: ${fmt(f.volume)}
 - AvgVol20: ${fmt(f.avgVol20)}
-- Support: ${fmt(f.support)}
-- Resistance: ${fmt(f.resistance)}
+- ATR14: ${fmt(f.atr14)}
+- Support gần nhất: ${fmt(f.support)}
+- Resistance gần nhất: ${fmt(f.resistance)}
+- Wave: ${f.wave}
+`;
+}
+
+function engineText(engine) {
+  const p = engine.plan;
+
+  if (p.side === "CHỜ") {
+    return `
+PHÂN TÍCH HỆ THỐNG:
+- Bias: CHỜ
+- Primary TF: ${engine.primaryTf}
+- Trend TF: ${engine.trendTf}
+- EMA Structure: ${engine.emaStructure}
+- Market Condition: ${engine.marketCondition}
+- LongScore: ${engine.longScore}/10
+- ShortScore: ${engine.shortScore}/10
+- Risk: ${p.riskLevel}
+- Vùng chờ: ${p.waitZone}
+- Lý do: ${engine.reason}
+`;
+  }
+
+  return `
+PHÂN TÍCH HỆ THỐNG:
+- Bias: ${engine.bias}
+- Primary TF: ${engine.primaryTf}
+- Trend TF: ${engine.trendTf}
+- EMA Structure: ${engine.emaStructure}
+- Market Condition: ${engine.marketCondition}
+- LongScore: ${engine.longScore}/10
+- ShortScore: ${engine.shortScore}/10
+- Side: ${p.side}
+- Entry: ${fmt(p.entryLow)} - ${fmt(p.entryHigh)}
+- SL: ${fmt(p.sl)}
+- TP1: ${fmt(p.tp1)}
+- TP2: ${fmt(p.tp2)}
+- RR TP2: ${fmt(p.rr)}
+- Risk: ${p.riskLevel}
+- Lý do/Cảnh báo: ${engine.reason}
 `;
 }
 
@@ -677,15 +980,20 @@ ${data.modeRule}
 
 ${data.frames.map(frameText).join("\n")}
 
+${engineText(data.engine)}
+
 Yêu cầu:
-- Bắt buộc format đúng mẫu.
-- Nếu Mode DEFAULT thì không hiện mục Mode.
-- Nếu Mode SCALP hoặc SWING thì hiện Mode.
-- Funding/OI là yếu tố phụ, không được lạm dụng để chọn CHỜ.
-- Nếu technical có lợi thế rõ thì phải nghiêng LONG hoặc SHORT.
-- Nếu LONG/SHORT phải có Entry, SL, TP1, TP2.
-- Nếu CHỜ thì không ghi Entry/SL/TP.
-- Trả lời đẹp, dễ đọc như bài phân tích trader chuyên nghiệp.
+- Ưu tiên dùng PHÂN TÍCH HỆ THỐNG để ra khuyến nghị.
+- Nhận định chỉ 2-3 câu.
+- Nhận định phải có EMA/Sonic R và nếu phù hợp thì nhắc OI/Funding/Volume.
+- Khuyến nghị dùng đúng format:
+❗️Khuyến nghị: 🔵 Long hoặc 🔴 Short hoặc 🟡 Chờ
+🔹Entry:
+🔹SL:
+🔹TP:
+- TP gộp 1 dòng, ví dụ: TP: 70100 - 70800.
+- Nếu Chờ thì không ghi Entry/SL/TP, chỉ ghi 🔹Vùng chờ.
+- Không ghi LongScore/ShortScore ra ngoài trừ khi user hỏi.
 `;
 
   const response = await openai.responses.create({
@@ -697,7 +1005,7 @@ ${userMessage}
 
 ${marketContext}
 `,
-    max_output_tokens: 500,
+    max_output_tokens: 420,
   });
 
   return response.output_text || "Bot chưa phân tích được.";
@@ -757,7 +1065,9 @@ bot.command("status", async (ctx) => {
     `Bot status: ${BOT_ENABLED ? "ON ✅" : "OFF ⛔"}\n` +
       `AI chat ngoài market: ${AI_CHAT_ENABLED ? "ON ✅" : "OFF ⛔"}\n` +
       `Cooldown: ${USER_COOLDOWN_MS / 1000}s/user\n` +
-      `Model: ${AI_MODEL}`
+      `Model: ${AI_MODEL}\n` +
+      `EMA: 34/89/200/610\n` +
+      `Signal Engine: ON ✅`
   );
 });
 
@@ -827,6 +1137,8 @@ app.get("/health", (_req, res) => {
     ok: true,
     bot: BOT_ENABLED ? "ON" : "OFF",
     ai_chat: AI_CHAT_ENABLED ? "ON" : "OFF",
+    ema: "34/89/200/610",
+    signal_engine: "ON",
   });
 });
 
