@@ -2,8 +2,11 @@ import express from "express";
 import { Telegraf } from "telegraf";
 import OpenAI from "openai";
 import dotenv from "dotenv";
+import pg from "pg";
 
 dotenv.config();
+
+const { Pool } = pg;
 
 const app = express();
 app.use(express.json());
@@ -12,12 +15,20 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3001;
 const AI_MODEL = process.env.AI_MODEL || "gpt-4.1-mini";
+const MEMORY_ENABLED = process.env.MEMORY_ENABLED === "true";
 
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY");
 
 const bot = new Telegraf(BOT_TOKEN);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+
+const db = process.env.DATABASE_URL
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+    })
+  : null;
 
 let BOT_ENABLED = true;
 let AI_CHAT_ENABLED = false;
@@ -41,6 +52,7 @@ Phong cách:
 - Không đưa cả Long và Short cùng lúc.
 - Chỉ chọn 1 hướng: Long, Short hoặc Chờ.
 - Không lạm dụng Chờ nếu hệ thống đã có bias rõ.
+- Nếu có memory user thì dùng tự nhiên, không lộ chữ "memory".
 
 Hệ phân tích chính:
 - EMA34, EMA89, EMA200, EMA610.
@@ -48,12 +60,6 @@ Hệ phân tích chính:
 - Volume, RSI, MACD, ATR.
 - Funding và Open Interest là yếu tố phụ để xác nhận futures sentiment.
 - Entry/SL/TP ưu tiên theo dữ liệu suggested từ hệ thống.
-
-Quy tắc:
-- Nếu Bias hệ thống là LONG và RR hợp lý thì ưu tiên Long.
-- Nếu Bias hệ thống là SHORT và RR hợp lý thì ưu tiên Short.
-- Nếu RR xấu, giá giữa range, tín hiệu mâu thuẫn mạnh thì chọn Chờ.
-- Nếu chọn Chờ thì không ghi Entry/SL/TP.
 
 FORMAT BẮT BUỘC:
 
@@ -87,13 +93,149 @@ Nếu Chờ:
 const CHAT_PROMPT = `
 Bạn là bot cộng đồng trader.
 Trả lời ngắn gọn, thân thiện, vui vừa phải.
+Có thể gọi tên người dùng nếu có.
 Không tư vấn tài chính nếu không có dữ liệu market.
 Không nói dài.
 `;
 
+// ================= DATABASE MEMORY =================
+
+async function initDatabase() {
+  if (!db || !MEMORY_ENABLED) {
+    console.log("PostgreSQL memory disabled");
+    return;
+  }
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS chat_memory (
+      id SERIAL PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      username TEXT,
+      first_name TEXT,
+      preferred_mode TEXT DEFAULT 'DEFAULT',
+      last_symbol TEXT,
+      messages JSONB DEFAULT '[]',
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(chat_id, user_id)
+    );
+  `);
+
+  console.log("PostgreSQL memory ready ✅");
+}
+
+async function getUserMemory(ctx) {
+  if (!db || !MEMORY_ENABLED) return null;
+
+  const chatId = String(ctx.chat?.id || "");
+  const userId = String(ctx.from?.id || "");
+
+  if (!chatId || !userId) return null;
+
+  const res = await db.query(
+    `SELECT * FROM chat_memory WHERE chat_id = $1 AND user_id = $2 LIMIT 1`,
+    [chatId, userId]
+  );
+
+  return res.rows[0] || null;
+}
+
+async function saveUserMemory(ctx, userText, botAnswer, symbol, mode) {
+  if (!db || !MEMORY_ENABLED) return;
+
+  const chatId = String(ctx.chat?.id || "");
+  const userId = String(ctx.from?.id || "");
+  const username = ctx.from?.username || null;
+  const firstName = ctx.from?.first_name || null;
+
+  if (!chatId || !userId) return;
+
+  const oldMemory = await getUserMemory(ctx);
+  const oldMessages = Array.isArray(oldMemory?.messages)
+    ? oldMemory.messages
+    : [];
+
+  const newMessages = [
+    ...oldMessages,
+    {
+      role: "user",
+      text: String(userText || "").slice(0, 1000),
+      time: new Date().toISOString(),
+    },
+    {
+      role: "bot",
+      text: String(botAnswer || "").slice(0, 1500),
+      time: new Date().toISOString(),
+    },
+  ].slice(-10);
+
+  await db.query(
+    `
+    INSERT INTO chat_memory (
+      chat_id, user_id, username, first_name,
+      preferred_mode, last_symbol, messages, updated_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())
+    ON CONFLICT (chat_id, user_id)
+    DO UPDATE SET
+      username = EXCLUDED.username,
+      first_name = EXCLUDED.first_name,
+      preferred_mode = EXCLUDED.preferred_mode,
+      last_symbol = COALESCE(EXCLUDED.last_symbol, chat_memory.last_symbol),
+      messages = EXCLUDED.messages,
+      updated_at = NOW()
+    `,
+    [
+      chatId,
+      userId,
+      username,
+      firstName,
+      mode || oldMemory?.preferred_mode || "DEFAULT",
+      symbol || oldMemory?.last_symbol || null,
+      JSON.stringify(newMessages),
+    ]
+  );
+}
+
+async function forgetUserMemory(ctx) {
+  if (!db || !MEMORY_ENABLED) return false;
+
+  const chatId = String(ctx.chat?.id || "");
+  const userId = String(ctx.from?.id || "");
+
+  await db.query(
+    `DELETE FROM chat_memory WHERE chat_id = $1 AND user_id = $2`,
+    [chatId, userId]
+  );
+
+  return true;
+}
+
+function memoryText(memory) {
+  if (!memory) return "MEMORY USER: Không có.";
+
+  const name = memory.first_name || memory.username || "member";
+  const messages = Array.isArray(memory.messages) ? memory.messages : [];
+
+  const recent = messages
+    .slice(-6)
+    .map((m) => `${m.role}: ${m.text}`)
+    .join("\n");
+
+  return `
+MEMORY USER:
+Tên/người hỏi: ${name}
+Mode hay dùng: ${memory.preferred_mode || "DEFAULT"}
+Coin gần nhất: ${memory.last_symbol || "N/A"}
+Tin nhắn gần đây:
+${recent || "Chưa có"}
+`;
+}
+
 // ================= MODE =================
 
-function detectTradeMode(text) {
+function detectTradeMode(text, memory = null) {
   const lower = String(text || "").toLowerCase();
 
   if (
@@ -117,7 +259,7 @@ function detectTradeMode(text) {
     return "SWING";
   }
 
-  return "DEFAULT";
+  return memory?.preferred_mode || "DEFAULT";
 }
 
 function getModeConfig(mode) {
@@ -202,7 +344,7 @@ async function getCachedBinanceSymbols() {
   return BINANCE_SYMBOL_CACHE;
 }
 
-async function detectSymbol(text) {
+async function detectSymbol(text, memory = null) {
   if (!text) return null;
 
   const upper = text.toUpperCase();
@@ -231,10 +373,10 @@ async function detectSymbol(text) {
 
   const ignoreWords = [
     "BOT", "AI", "LONG", "SHORT", "BUY", "SELL", "ENTRY", "TP", "TP1", "TP2",
-    "SL", "STL", "STOP", "LOSS", "ROI", "SAO", "ROI", "RỒI", "HOM", "HÔM",
-    "NAY", "PHAN", "PHÂN", "TICH", "TÍCH", "CO", "CÓ", "DUOC", "ĐƯỢC",
-    "KHONG", "KHÔNG", "GIUP", "GIÚP", "XEM", "SCALP", "SCALPING", "SWING",
-    "EMA", "SONIC", "FUNDING", "OI",
+    "SL", "STL", "STOP", "LOSS", "ROI", "SAO", "RỒI", "HOM", "HÔM", "NAY",
+    "PHAN", "PHÂN", "TICH", "TÍCH", "CO", "CÓ", "DUOC", "ĐƯỢC", "KHONG",
+    "KHÔNG", "GIUP", "GIÚP", "XEM", "SCALP", "SCALPING", "SWING", "EMA",
+    "SONIC", "FUNDING", "OI", "PHÂN", "TÍCH", "CALL", "LỆNH", "LENH",
   ];
 
   for (const word of words) {
@@ -242,6 +384,13 @@ async function detectSymbol(text) {
 
     const pair = `${word}USDT`;
     if (binanceSymbols.includes(pair)) return pair;
+  }
+
+  if (
+    memory?.last_symbol &&
+    /(coin này|con này|nó|tiếp|lại|chart này|kèo này)/i.test(text)
+  ) {
+    return memory.last_symbol;
   }
 
   return null;
@@ -557,8 +706,9 @@ function getEmaStructure(f) {
     return "BEAR";
   }
 
-  if (price > ema89 && price < ema200) return "MIXED_BETWEEN_EMA89_200";
-  if (price < ema89 && price > ema200) return "MIXED_BETWEEN_EMA89_200";
+  if ((price > ema89 && price < ema200) || (price < ema89 && price > ema200)) {
+    return "MIXED_BETWEEN_EMA89_200";
+  }
 
   return "NEUTRAL";
 }
@@ -761,7 +911,6 @@ function buildSignalEngine(data, modeConfig) {
   const plan = buildTradePlan(primary, signal);
 
   if (plan.side !== "CHỜ" && plan.rr && plan.rr < 1.15) {
-    signal.bias = "CHỜ";
     return {
       primaryTf: primary.tf,
       trendTf: trend?.tf || "N/A",
@@ -963,7 +1112,7 @@ PHÂN TÍCH HỆ THỐNG:
 
 // ================= OPENAI =================
 
-async function askChatGPT(userMessage, symbol, mode) {
+async function askChatGPT(userMessage, symbol, mode, memory) {
   const data = await getMarketContext(symbol, mode);
 
   const marketContext = `
@@ -1003,6 +1152,8 @@ Yêu cầu:
 User hỏi:
 ${userMessage}
 
+${memoryText(memory)}
+
 ${marketContext}
 `,
     max_output_tokens: 420,
@@ -1011,11 +1162,16 @@ ${marketContext}
   return response.output_text || "Bot chưa phân tích được.";
 }
 
-async function askChatOnly(text) {
+async function askChatOnly(text, memory) {
   const response = await openai.responses.create({
     model: AI_MODEL,
     instructions: CHAT_PROMPT,
-    input: text,
+    input: `
+${memoryText(memory)}
+
+User hỏi:
+${text}
+`,
     max_output_tokens: 120,
   });
 
@@ -1034,36 +1190,39 @@ bot.command("ping", async (ctx) => {
 
 bot.command("on", async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
-
   BOT_ENABLED = true;
   await ctx.reply("Bot đã bật ✅");
 });
 
 bot.command("off", async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
-
   BOT_ENABLED = false;
   await ctx.reply("Bot đã tắt trả lời phân tích ⛔");
 });
 
 bot.command("ai_on", async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
-
   AI_CHAT_ENABLED = true;
   await ctx.reply("Đã bật chat AI ngoài market ✅");
 });
 
 bot.command("ai_off", async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
-
   AI_CHAT_ENABLED = false;
   await ctx.reply("Đã tắt chat AI ngoài market ⛔");
+});
+
+bot.command("forgetme", async (ctx) => {
+  const ok = await forgetUserMemory(ctx);
+  if (!ok) return ctx.reply("Memory chưa được bật hoặc chưa có database.");
+  await ctx.reply("Đã xoá memory của bạn trong group này ✅");
 });
 
 bot.command("status", async (ctx) => {
   await ctx.reply(
     `Bot status: ${BOT_ENABLED ? "ON ✅" : "OFF ⛔"}\n` +
       `AI chat ngoài market: ${AI_CHAT_ENABLED ? "ON ✅" : "OFF ⛔"}\n` +
+      `Memory: ${MEMORY_ENABLED && db ? "ON ✅" : "OFF ⛔"}\n` +
       `Cooldown: ${USER_COOLDOWN_MS / 1000}s/user\n` +
       `Model: ${AI_MODEL}\n` +
       `EMA: 34/89/200/610\n` +
@@ -1079,7 +1238,6 @@ bot.on("text", async (ctx) => {
 
     if (!text) return;
     if (text.startsWith("/")) return;
-
     if (!BOT_ENABLED) return;
 
     const lower = text.toLowerCase();
@@ -1097,25 +1255,30 @@ bot.on("text", async (ctx) => {
 
     userCooldown.set(userId, now);
 
-    const symbol = await detectSymbol(text);
+    const memory = await getUserMemory(ctx);
+    const symbol = await detectSymbol(text, memory);
 
     if (!symbol) {
       if (!AI_CHAT_ENABLED) return;
 
       await ctx.sendChatAction("typing");
 
-      const answer = await askChatOnly(text);
+      const answer = await askChatOnly(text, memory);
+
+      await saveUserMemory(ctx, text, answer, null, "CHAT");
 
       return ctx.reply(answer, {
         reply_to_message_id: ctx.message.message_id,
       });
     }
 
-    const mode = detectTradeMode(text);
+    const mode = detectTradeMode(text, memory);
 
     await ctx.sendChatAction("typing");
 
-    const answer = await askChatGPT(text, symbol, mode);
+    const answer = await askChatGPT(text, symbol, mode, memory);
+
+    await saveUserMemory(ctx, text, answer, symbol, mode);
 
     await ctx.reply(answer, {
       reply_to_message_id: ctx.message.message_id,
@@ -1137,12 +1300,15 @@ app.get("/health", (_req, res) => {
     ok: true,
     bot: BOT_ENABLED ? "ON" : "OFF",
     ai_chat: AI_CHAT_ENABLED ? "ON" : "OFF",
+    memory: MEMORY_ENABLED && db ? "ON" : "OFF",
     ema: "34/89/200/610",
     signal_engine: "ON",
   });
 });
 
 // ================= START =================
+
+await initDatabase();
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
