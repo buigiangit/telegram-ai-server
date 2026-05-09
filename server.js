@@ -7,7 +7,7 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
-
+//
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3001;
