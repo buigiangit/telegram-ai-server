@@ -20,6 +20,7 @@ const bot = new Telegraf(BOT_TOKEN);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 let BOT_ENABLED = true;
+let AI_CHAT_ENABLED = false;
 
 const USER_COOLDOWN_MS = 15 * 1000;
 const userCooldown = new Map();
@@ -41,8 +42,7 @@ Mục tiêu:
 
 Quy tắc:
 - Trả lời ngắn gọn, chuyên nghiệp.
-- Chỉ chọn 1 hướng:
-  LONG hoặc SHORT hoặc CHỜ.
+- Chỉ chọn 1 hướng: LONG hoặc SHORT hoặc CHỜ.
 - Không được đưa cả LONG và SHORT cùng lúc.
 - Không lan man.
 - Không giải thích kiểu học thuật.
@@ -83,35 +83,20 @@ Quy tắc Funding/OI:
 - Funding và OI chỉ là yếu tố PHỤ để xác nhận tâm lý futures.
 - Không được chỉ vì Funding/OI trung tính mà chuyển sang CHỜ.
 - Nếu technical đẹp thì vẫn ưu tiên LONG hoặc SHORT.
-- Funding dương cao:
-  cẩn thận long squeeze.
-- Funding âm sâu:
-  cẩn thận short squeeze.
-- Giá tăng + OI tăng:
-  xu hướng tăng được hỗ trợ.
-- Giá tăng + OI giảm:
-  đà tăng yếu hơn.
-- Giá giảm + OI tăng:
-  áp lực short mạnh hơn.
-- Giá giảm + OI giảm:
-  xu hướng giảm yếu dần.
+- Funding dương cao: cẩn thận long squeeze.
+- Funding âm sâu: cẩn thận short squeeze.
+- Giá tăng + OI tăng: xu hướng tăng được hỗ trợ.
+- Giá tăng + OI giảm: đà tăng yếu hơn.
+- Giá giảm + OI tăng: áp lực short mạnh hơn.
+- Giá giảm + OI giảm: xu hướng giảm yếu dần.
 
 Quy tắc chọn CHỜ:
-- CHỈ chọn CHỜ khi:
-  + sideway quá hẹp
-  + volume quá yếu
-  + tín hiệu mâu thuẫn mạnh
-  + giá đứng giữa range không có lợi thế RR
+- CHỈ chọn CHỜ khi sideway quá hẹp, volume quá yếu, tín hiệu mâu thuẫn mạnh hoặc giá đứng giữa range không có lợi thế RR.
 - Không lạm dụng CHỜ.
 - Nếu market có bias rõ thì phải nghiêng LONG hoặc SHORT.
 
 Quy tắc LONG/SHORT:
-- Nếu LONG hoặc SHORT:
-  + bắt buộc có:
-    Entry
-    SL
-    TP1
-    TP2
+- Nếu LONG hoặc SHORT: bắt buộc có Entry, SL, TP1, TP2.
 - Entry phải hợp lý theo hỗ trợ kháng cự gần nhất.
 - Không đặt Entry vô lý quá xa giá hiện tại.
 - SL phải logic theo cấu trúc giá.
@@ -119,9 +104,7 @@ Quy tắc LONG/SHORT:
 
 Nếu chọn CHỜ:
 - Không ghi Entry/SL/TP.
-- Chỉ ghi:
-  + lý do chờ
-  + vùng cần xác nhận.
+- Chỉ ghi lý do chờ và vùng cần xác nhận.
 
 FORMAT:
 
@@ -153,6 +136,13 @@ Nếu mode là DEFAULT:
 Dòng cuối luôn là:
 
 ⚠️ Tham khảo, không phải lời khuyên đầu tư.
+`;
+
+const CHAT_PROMPT = `
+Bạn là bot cộng đồng trader.
+Trả lời ngắn gọn, thân thiện, vui vừa phải.
+Không tư vấn tài chính nếu không có dữ liệu market.
+Không nói dài.
 `;
 
 // ================= MODE =================
@@ -199,7 +189,7 @@ MODE SCALP:
 - Entry phải sát vùng hỗ trợ/kháng cự gần.
 - TP ngắn hơn, SL chặt hơn.
 - Funding/OI dùng để tránh vào lệnh ngược đám đông quá nóng.
-- Nếu giá đang giữa range, ưu tiên CHỜ.
+- Nếu giá đang giữa range, chỉ CHỜ khi thật sự không có lợi thế RR.
 `,
     };
   }
@@ -433,18 +423,14 @@ async function getOpenInterestStats(symbol) {
     const data = await res.json();
 
     if (!Array.isArray(data) || data.length < 2) {
-      return {
-        oiChangePct1h: null,
-      };
+      return { oiChangePct1h: null };
     }
 
     const prev = Number(data[0].sumOpenInterest);
     const now = Number(data[1].sumOpenInterest);
 
     if (!prev || !now) {
-      return {
-        oiChangePct1h: null,
-      };
+      return { oiChangePct1h: null };
     }
 
     return {
@@ -452,9 +438,7 @@ async function getOpenInterestStats(symbol) {
     };
   } catch (error) {
     console.error("OI_HIST_ERROR:", error);
-    return {
-      oiChangePct1h: null,
-    };
+    return { oiChangePct1h: null };
   }
 }
 
@@ -697,15 +681,11 @@ Yêu cầu:
 - Bắt buộc format đúng mẫu.
 - Nếu Mode DEFAULT thì không hiện mục Mode.
 - Nếu Mode SCALP hoặc SWING thì hiện Mode.
-- Phải dùng Funding Rate và Open Interest để đánh giá tâm lý futures nếu dữ liệu khác N/A.
-- Nếu Funding dương cao và OI tăng nóng thì hạn chế FOMO LONG.
-- Nếu Funding âm sâu và OI tăng nóng thì cẩn thận SHORT squeeze.
+- Funding/OI là yếu tố phụ, không được lạm dụng để chọn CHỜ.
+- Nếu technical có lợi thế rõ thì phải nghiêng LONG hoặc SHORT.
 - Nếu LONG/SHORT phải có Entry, SL, TP1, TP2.
 - Nếu CHỜ thì không ghi Entry/SL/TP.
 - Trả lời đẹp, dễ đọc như bài phân tích trader chuyên nghiệp.
-- Ưu tiên đưa ra bias LONG hoặc SHORT nếu technical có lợi thế rõ.
-- Không lạm dụng CHỜ.
-- Chỉ dùng CHỜ khi market sideway hẹp hoặc tín hiệu xấu thực sự.
 `;
 
   const response = await openai.responses.create({
@@ -721,6 +701,17 @@ ${marketContext}
   });
 
   return response.output_text || "Bot chưa phân tích được.";
+}
+
+async function askChatOnly(text) {
+  const response = await openai.responses.create({
+    model: AI_MODEL,
+    instructions: CHAT_PROMPT,
+    input: text,
+    max_output_tokens: 120,
+  });
+
+  return response.output_text || "Bot chưa trả lời được.";
 }
 
 // ================= COMMANDS =================
@@ -747,9 +738,24 @@ bot.command("off", async (ctx) => {
   await ctx.reply("Bot đã tắt trả lời phân tích ⛔");
 });
 
+bot.command("ai_on", async (ctx) => {
+  if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
+
+  AI_CHAT_ENABLED = true;
+  await ctx.reply("Đã bật chat AI ngoài market ✅");
+});
+
+bot.command("ai_off", async (ctx) => {
+  if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
+
+  AI_CHAT_ENABLED = false;
+  await ctx.reply("Đã tắt chat AI ngoài market ⛔");
+});
+
 bot.command("status", async (ctx) => {
   await ctx.reply(
     `Bot status: ${BOT_ENABLED ? "ON ✅" : "OFF ⛔"}\n` +
+      `AI chat ngoài market: ${AI_CHAT_ENABLED ? "ON ✅" : "OFF ⛔"}\n` +
       `Cooldown: ${USER_COOLDOWN_MS / 1000}s/user\n` +
       `Model: ${AI_MODEL}`
   );
@@ -782,7 +788,18 @@ bot.on("text", async (ctx) => {
     userCooldown.set(userId, now);
 
     const symbol = await detectSymbol(text);
-    if (!symbol) return;
+
+    if (!symbol) {
+      if (!AI_CHAT_ENABLED) return;
+
+      await ctx.sendChatAction("typing");
+
+      const answer = await askChatOnly(text);
+
+      return ctx.reply(answer, {
+        reply_to_message_id: ctx.message.message_id,
+      });
+    }
 
     const mode = detectTradeMode(text);
 
@@ -795,7 +812,7 @@ bot.on("text", async (ctx) => {
     });
   } catch (error) {
     console.error("BOT_ERROR:", error);
-    await ctx.reply("Bot lỗi tạm thời.");
+    await ctx.reply("⚠️ Bot đang bận hoặc market API timeout.");
   }
 });
 
@@ -809,6 +826,7 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     bot: BOT_ENABLED ? "ON" : "OFF",
+    ai_chat: AI_CHAT_ENABLED ? "ON" : "OFF",
   });
 });
 
