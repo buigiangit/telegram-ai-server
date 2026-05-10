@@ -284,8 +284,7 @@ function memoryText(memory) {
   const recent = messages
     .slice(-6)
     .map((m) => `${m.role}: ${m.text}`)
-    .join("
-");
+    .join("");
 
   return `
 MEMORY USER:
@@ -1256,8 +1255,7 @@ OI Change 1H: ${fmtPct(data.oiChangePct1h)}
 
 ${data.modeRule}
 
-${data.frames.map(frameText).join("
-")}
+${data.frames.map(frameText).join("")}
 
 ${engineText(data.engine)}
 
