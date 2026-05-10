@@ -7,37 +7,23 @@ import pg from "pg";
 dotenv.config();
 
 const { Pool } = pg;
-//
+
 const app = express();
 app.use(express.json());
 
+// ================= ENV =================
+
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const GROUP_ID = process.env.GROUP_ID || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3001;
 const AI_MODEL = process.env.AI_MODEL || "gpt-4.1-mini";
 const MEMORY_ENABLED = process.env.MEMORY_ENABLED === "true";
 
-const BOT_CONFIGS = [
-  {
-    code: "FBT",
-    token: process.env.FBT_BOT_TOKEN,
-    style: "FBT",
-    botName: "bot",
-    groupId: process.env.FBT_GROUP_ID,
-  },
-  {
-    code: "CDT",
-    token: process.env.CDT_BOT_TOKEN,
-    style: "CDT",
-    botName: "thư ký",
-    groupId: process.env.CDT_GROUP_ID,
-  },
-].filter((x) => x.token);
-
+if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY");
-if (BOT_CONFIGS.length === 0) {
-  throw new Error("Missing FBT_BOT_TOKEN or CDT_BOT_TOKEN");
-}
 
+const bot = new Telegraf(BOT_TOKEN);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 const db = process.env.DATABASE_URL
@@ -59,7 +45,7 @@ let BINANCE_SYMBOL_CACHE_TIME = 0;
 // ================= PROMPT =================
 
 const SYSTEM_PROMPT = `
-Bạn là AI phân tích crypto futures cho cộng đồng trader.
+Bạn là AI phân tích crypto futures cho cộng đồng FBT.
 
 Vai trò:
 - Là trợ lý phân tích giống một trader thật trong cộng đồng.
@@ -67,8 +53,10 @@ Vai trò:
 - Không nói kiểu "là một AI".
 - Không văn mẫu khô cứng.
 
-Phong cách:
-- Ngắn gọn, rõ bias.
+Phong cách FBT:
+- Trader thực chiến, gọn, chắc, rõ bias.
+- Văn từ mạnh hơn, không vòng vo.
+- Ưu tiên nói thẳng: Long / Short / Chờ, entry, SL, TP.
 - Không lan man.
 - Không học thuật.
 - Không dùng markdown ###.
@@ -127,10 +115,10 @@ Nếu Chờ:
 `;
 
 const CHAT_PROMPT = `
-Bạn là em thư ký/trợ lý cộng đồng trader.
+Bạn là trợ lý cộng đồng trader FBT.
 
 Tính cách:
-- Nói chuyện tự nhiên, thân thiện, hơi vui nhưng không lố.
+- Nói chuyện tự nhiên, thân thiện, thực chiến.
 - Gọi tên người dùng nếu biết tên.
 - Nhớ ngữ cảnh gần nhất, trả lời như đang nói tiếp câu chuyện.
 - Không nói kiểu "là một AI".
@@ -172,16 +160,6 @@ async function initDatabase() {
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(chat_id, user_id)
-    );
-  `);
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS group_config (
-      chat_id TEXT PRIMARY KEY,
-      group_title TEXT,
-      style TEXT DEFAULT 'FBT',
-      created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
 
@@ -301,63 +279,6 @@ Cách dùng memory:
 - Có thể gọi tên người dùng tự nhiên, nhưng không lạm dụng.
 - Không được nói lộ rằng đang đọc memory.
 `;
-}
-
-// ================= GROUP STYLE =================
-
-function normalizeStyle(style) {
-  const value = String(style || "FBT").trim().toUpperCase();
-  if (["FBT", "CDT"].includes(value)) return value;
-  return "FBT";
-}
-
-function groupStyleText(groupConfig) {
-  const style = normalizeStyle(groupConfig?.style);
-
-  if (style === "CDT") {
-    return `
-GROUP STYLE: CDT
-- Tên gọi trong group là "Thư Ký".
-- Phong thái nữ tính, nhẹ nhàng, như em thư ký cộng đồng trader.
-- Có thể dùng: "em thấy", "mình nên canh", "kèo này chưa nên vội", "canh về entry sẽ đẹp hơn".
-- Văn từ mềm hơn FBT nhưng vẫn thực chiến, không lan man.
-- Không làm mất format call lệnh.
-`;
-  }
-
-  return `
-GROUP STYLE: FBT
-- Phong thái trader thực chiến, gọn, chắc, rõ bias.
-- Văn từ mạnh hơn, không vòng vo.
-- Ưu tiên nói thẳng: Long / Short / Chờ, entry, SL, TP.
-`;
-}
-
-function buildTradePrompt(groupConfig) {
-  return `${SYSTEM_PROMPT}
-
-${groupStyleText(groupConfig)}`;
-}
-
-function buildChatPrompt(groupConfig) {
-  const style = normalizeStyle(groupConfig?.style);
-
-  if (style === "CDT") {
-    return `${CHAT_PROMPT}
-
-Phong thái riêng CDT:
-- Tên gọi trong group là "Thư Ký".
-- Khi user gọi "thư ký", hiểu là đang gọi mình.
-- Trả lời như em thư ký cộng đồng: nhẹ nhàng, dễ nghe, gần gũi.
-- Có thể xưng "em" khi phù hợp.
-- Không quá gắt, không troll quá đà.`;
-  }
-
-  return `${CHAT_PROMPT}
-
-Phong thái riêng FBT:
-- Trả lời gọn, vui vừa phải, thực chiến.
-- Không màu mè, không dài dòng.`;
 }
 
 // ================= MODE =================
@@ -483,20 +404,20 @@ async function detectSymbol(text, memory = null) {
 
   for (const item of specialMap) {
     for (const key of item.keywords) {
-      const regex = new RegExp(`\b${key}\b`, "i");
+      const regex = new RegExp(`\\b${key}\\b`, "i");
       if (regex.test(upper)) return item.symbol;
     }
   }
 
   const binanceSymbols = await getCachedBinanceSymbols();
 
-  const fullPairMatch = upper.match(/([A-Z0-9]{2,20}USDT)/);
+  const fullPairMatch = upper.match(/\b([A-Z0-9]{2,20}USDT)\b/);
   if (fullPairMatch) {
     const pair = fullPairMatch[1];
     if (binanceSymbols.includes(pair)) return pair;
   }
 
-  const words = upper.match(/[A-Z0-9]{2,15}/g) || [];
+  const words = upper.match(/\b[A-Z0-9]{2,15}\b/g) || [];
 
   const ignoreWords = [
     "BOT", "AI", "LONG", "SHORT", "BUY", "SELL", "ENTRY", "TP", "TP1", "TP2",
@@ -504,7 +425,6 @@ async function detectSymbol(text, memory = null) {
     "PHAN", "PHÂN", "TICH", "TÍCH", "CO", "CÓ", "DUOC", "ĐƯỢC", "KHONG",
     "KHÔNG", "GIUP", "GIÚP", "XEM", "SCALP", "SCALPING", "SWING", "EMA",
     "SONIC", "FUNDING", "OI", "CALL", "LỆNH", "LENH", "PHÂN", "TÍCH",
-    "THƯ", "KÝ", "THU", "KY", "THUKY", "KI",
   ];
 
   for (const word of words) {
@@ -1240,7 +1160,28 @@ PHÂN TÍCH HỆ THỐNG:
 
 // ================= OPENAI =================
 
-async function askChatGPT(userMessage, symbol, mode, memory, groupConfig) {
+function groupStyleText() {
+  return `
+GROUP STYLE: FBT
+- Phong thái trader thực chiến, gọn, chắc, rõ bias.
+- Văn từ mạnh hơn, không vòng vo.
+- Ưu tiên nói thẳng: Long / Short / Chờ, entry, SL, TP.
+`;
+}
+
+function buildTradePrompt() {
+  return `${SYSTEM_PROMPT}\n\n${groupStyleText()}`;
+}
+
+function buildChatPrompt() {
+  return `${CHAT_PROMPT}
+
+Phong thái riêng FBT:
+- Trả lời gọn, vui vừa phải, thực chiến.
+- Không màu mè, không dài dòng.`;
+}
+
+async function askChatGPT(userMessage, symbol, mode, memory) {
   const data = await getMarketContext(symbol, mode);
 
   const marketContext = `
@@ -1275,14 +1216,14 @@ Yêu cầu:
 
   const response = await openai.responses.create({
     model: AI_MODEL,
-    instructions: buildTradePrompt(groupConfig),
+    instructions: buildTradePrompt(),
     input: `
 User hỏi:
 ${userMessage}
 
 ${memoryText(memory)}
 
-${groupStyleText(groupConfig)}
+${groupStyleText()}
 
 ${marketContext}
 `,
@@ -1292,10 +1233,10 @@ ${marketContext}
   return response.output_text || "Bot chưa phân tích được.";
 }
 
-async function askChatOnly(text, memory, groupConfig) {
+async function askChatOnly(text, memory) {
   const response = await openai.responses.create({
     model: AI_MODEL,
-    instructions: buildChatPrompt(groupConfig),
+    instructions: buildChatPrompt(),
     input: `
 ${memoryText(memory)}
 
@@ -1308,189 +1249,154 @@ ${text}
   return response.output_text || "Bot chưa trả lời được.";
 }
 
-// ================= MULTI BOT =================
+// ================= TELEGRAM BOT =================
 
-function isAllowedGroup(ctx, botConfig) {
-  if (!botConfig.groupId) return true;
-  return String(ctx.chat?.id) === String(botConfig.groupId);
+function isAllowedGroup(ctx) {
+  if (!GROUP_ID) return true;
+  return String(ctx.chat?.id) === String(GROUP_ID);
 }
 
-function getBotCallNames(botConfig) {
-  if (botConfig.style === "CDT") {
-    return ["thư ký", "thu ky", "thuky", "thư kí", "thu ki", "bot"];
-  }
-
-  return ["bot"];
-}
-
-function isBotMentionedForConfig(text, botConfig) {
+function isBotMentioned(text) {
   const lower = String(text || "").toLowerCase();
-  return getBotCallNames(botConfig).some((name) => lower.includes(name));
+  return lower.includes("bot");
 }
 
-function getRuntimeGroupConfig(ctx, botConfig) {
-  return {
-    chat_id: String(ctx.chat?.id || ""),
-    group_title: ctx.chat?.title || ctx.chat?.username || "Private Chat",
-    style: botConfig.style,
-  };
-}
+bot.start(async (ctx) => {
+  if (!isAllowedGroup(ctx)) return;
+  await ctx.reply("FBT Bot Online ✅");
+});
 
-function setupBot(bot, botConfig) {
-  bot.start(async (ctx) => {
-    if (!isAllowedGroup(ctx, botConfig)) return;
-    await ctx.reply(`${botConfig.botName} Online ✅`);
-  });
+bot.command("ping", async (ctx) => {
+  if (!isAllowedGroup(ctx)) return;
+  await ctx.reply("pong ✅");
+});
 
-  bot.command("ping", async (ctx) => {
-    if (!isAllowedGroup(ctx, botConfig)) return;
-    await ctx.reply("pong ✅");
-  });
+bot.command("on", async (ctx) => {
+  if (!isAllowedGroup(ctx)) return;
+  if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
 
-  bot.command("on", async (ctx) => {
-    if (!isAllowedGroup(ctx, botConfig)) return;
-    if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
+  BOT_ENABLED = true;
+  await ctx.reply("Bot đã bật ✅");
+});
 
-    BOT_ENABLED = true;
-    await ctx.reply(`${botConfig.botName} đã bật ✅`);
-  });
+bot.command("off", async (ctx) => {
+  if (!isAllowedGroup(ctx)) return;
+  if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
 
-  bot.command("off", async (ctx) => {
-    if (!isAllowedGroup(ctx, botConfig)) return;
-    if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
+  BOT_ENABLED = false;
+  await ctx.reply("Bot đã tắt trả lời phân tích ⛔");
+});
 
-    BOT_ENABLED = false;
-    await ctx.reply(`${botConfig.botName} đã tắt trả lời phân tích ⛔`);
-  });
+bot.command("ai_on", async (ctx) => {
+  if (!isAllowedGroup(ctx)) return;
+  if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
 
-  bot.command("ai_on", async (ctx) => {
-    if (!isAllowedGroup(ctx, botConfig)) return;
-    if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
+  AI_CHAT_ENABLED = true;
+  await ctx.reply("Đã bật chat AI ngoài market ✅");
+});
 
-    AI_CHAT_ENABLED = true;
-    await ctx.reply("Đã bật chat AI ngoài market ✅");
-  });
+bot.command("ai_off", async (ctx) => {
+  if (!isAllowedGroup(ctx)) return;
+  if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
 
-  bot.command("ai_off", async (ctx) => {
-    if (!isAllowedGroup(ctx, botConfig)) return;
-    if (!isAdmin(ctx)) return ctx.reply("Bạn không có quyền dùng lệnh này.");
+  AI_CHAT_ENABLED = false;
+  await ctx.reply("Đã tắt chat AI ngoài market ⛔");
+});
 
-    AI_CHAT_ENABLED = false;
-    await ctx.reply("Đã tắt chat AI ngoài market ⛔");
-  });
+bot.command("forgetme", async (ctx) => {
+  if (!isAllowedGroup(ctx)) return;
 
-  bot.command("forgetme", async (ctx) => {
-    if (!isAllowedGroup(ctx, botConfig)) return;
+  const ok = await forgetUserMemory(ctx);
+  if (!ok) return ctx.reply("Memory chưa được bật hoặc chưa có database.");
 
-    const ok = await forgetUserMemory(ctx);
-    if (!ok) return ctx.reply("Memory chưa được bật hoặc chưa có database.");
+  await ctx.reply("Đã xoá memory của bạn trong group này ✅");
+});
 
-    await ctx.reply("Đã xoá memory của bạn trong group này ✅");
-  });
+bot.command("status", async (ctx) => {
+  if (!isAllowedGroup(ctx)) return;
 
-  bot.command("status", async (ctx) => {
-    if (!isAllowedGroup(ctx, botConfig)) return;
+  await ctx.reply(
+    `Bot: FBT\n` +
+      `Name: bot\n` +
+      `Group ID: ${ctx.chat?.id}\n` +
+      `Bot status: ${BOT_ENABLED ? "ON ✅" : "OFF ⛔"}\n` +
+      `AI chat ngoài market: ${AI_CHAT_ENABLED ? "ON ✅" : "OFF ⛔"}\n` +
+      `Memory: ${MEMORY_ENABLED && db ? "ON ✅" : "OFF ⛔"}\n` +
+      `Model: ${AI_MODEL}\n` +
+      `EMA: 34/89/200/610\n` +
+      `Signal Engine: ON ✅`
+  );
+});
 
-    await ctx.reply(
-      `Bot: ${botConfig.code}
-` +
-        `Name: ${botConfig.botName}
-` +
-        `Style: ${botConfig.style}
-` +
-        `Group ID: ${ctx.chat?.id}
-` +
-        `Bot status: ${BOT_ENABLED ? "ON ✅" : "OFF ⛔"}
-` +
-        `AI chat ngoài market: ${AI_CHAT_ENABLED ? "ON ✅" : "OFF ⛔"}
-` +
-        `Memory: ${MEMORY_ENABLED && db ? "ON ✅" : "OFF ⛔"}
-` +
-        `Model: ${AI_MODEL}
-` +
-        `EMA: 34/89/200/610
-` +
-        `Signal Engine: ON ✅`
-    );
-  });
+bot.on("text", async (ctx) => {
+  try {
+    if (!isAllowedGroup(ctx)) return;
 
-  bot.on("text", async (ctx) => {
-    try {
-      if (!isAllowedGroup(ctx, botConfig)) return;
+    const text = ctx.message?.text;
 
-      const text = ctx.message.text;
+    if (!text) return;
+    if (text.startsWith("/")) return;
+    if (!BOT_ENABLED) return;
+    if (!isBotMentioned(text)) return;
 
-      if (!text) return;
-      if (text.startsWith("/")) return;
-      if (!BOT_ENABLED) return;
+    const userId = String(ctx.from?.id || "unknown");
+    const now = Date.now();
+    const lastTime = userCooldown.get(userId) || 0;
 
-      if (!isBotMentionedForConfig(text, botConfig)) return;
+    if (now - lastTime < USER_COOLDOWN_MS) {
+      const wait = Math.ceil((USER_COOLDOWN_MS - (now - lastTime)) / 1000);
+      return ctx.reply(`Chờ ${wait}s nữa rồi hỏi tiếp nhé.`);
+    }
 
-      const userId = `${botConfig.code}:${String(ctx.from?.id || "unknown")}`;
-      const now = Date.now();
-      const lastTime = userCooldown.get(userId) || 0;
+    userCooldown.set(userId, now);
 
-      if (now - lastTime < USER_COOLDOWN_MS) {
-        const wait = Math.ceil((USER_COOLDOWN_MS - (now - lastTime)) / 1000);
-        return ctx.reply(`Chờ ${wait}s nữa rồi hỏi tiếp nhé.`);
-      }
+    const memory = await getUserMemory(ctx);
+    const symbol = await detectSymbol(text, memory);
 
-      userCooldown.set(userId, now);
-
-      const groupConfig = getRuntimeGroupConfig(ctx, botConfig);
-      const memory = await getUserMemory(ctx);
-      const symbol = await detectSymbol(text, memory);
-
-      if (!symbol) {
-        if (!AI_CHAT_ENABLED) return;
-
-        await ctx.sendChatAction("typing");
-
-        const answer = await askChatOnly(text, memory, groupConfig);
-
-        await saveUserMemory(ctx, text, answer, null, "CHAT");
-
-        return ctx.reply(answer, {
-          reply_to_message_id: ctx.message.message_id,
-        });
-      }
-
-      const mode = detectTradeMode(text, memory);
+    if (!symbol) {
+      if (!AI_CHAT_ENABLED) return;
 
       await ctx.sendChatAction("typing");
 
-      const answer = await askChatGPT(text, symbol, mode, memory, groupConfig);
+      const answer = await askChatOnly(text, memory);
 
-      await saveUserMemory(ctx, text, answer, symbol, mode);
+      await saveUserMemory(ctx, text, answer, null, "CHAT");
 
-      await ctx.reply(answer, {
+      return ctx.reply(answer, {
         reply_to_message_id: ctx.message.message_id,
       });
-    } catch (error) {
-      console.error(`${botConfig.code}_BOT_ERROR:`, error);
-      await ctx.reply("⚠️ Bot đang bận hoặc market API timeout.");
     }
-  });
-}
+
+    const mode = detectTradeMode(text, memory);
+
+    await ctx.sendChatAction("typing");
+
+    const answer = await askChatGPT(text, symbol, mode, memory);
+
+    await saveUserMemory(ctx, text, answer, symbol, mode);
+
+    await ctx.reply(answer, {
+      reply_to_message_id: ctx.message.message_id,
+    });
+  } catch (error) {
+    console.error("FBT_BOT_ERROR:", error);
+    await ctx.reply("⚠️ Bot đang bận hoặc market API timeout.");
+  }
+});
 
 // ================= EXPRESS =================
 
 app.get("/", (_req, res) => {
-  res.send("AI Multi Market Bot Running");
+  res.send("FBT AI Market Bot Running");
 });
 
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    bots: BOT_CONFIGS.map((x) => ({
-      code: x.code,
-      style: x.style,
-      groupId: x.groupId || null,
-      enabled: Boolean(x.token),
-    })),
     bot: BOT_ENABLED ? "ON" : "OFF",
     ai_chat: AI_CHAT_ENABLED ? "ON" : "OFF",
     memory: MEMORY_ENABLED && db ? "ON" : "OFF",
+    group_id: GROUP_ID || null,
     ema: "34/89/200/610",
     signal_engine: "ON",
   });
@@ -1504,64 +1410,23 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-const tokenSet = new Set(BOT_CONFIGS.map((x) => x.token));
+try {
+  await bot.telegram.deleteWebhook({ drop_pending_updates: true });
 
-if (tokenSet.size !== BOT_CONFIGS.length) {
-  throw new Error("FBT_BOT_TOKEN và CDT_BOT_TOKEN đang bị trùng nhau.");
+  await bot.launch({
+    dropPendingUpdates: true,
+    allowedUpdates: ["message"],
+  });
+
+  console.log("FBT bot launched ✅");
+} catch (err) {
+  console.error("FBT_BOT_LAUNCH_ERROR:", err);
 }
 
-const bots = BOT_CONFIGS.map((config) => {
-  const instance = new Telegraf(config.token);
-  setupBot(instance, config);
-  return { instance, config };
+process.once("SIGINT", () => {
+  bot.stop("SIGINT");
 });
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function startBots() {
-  for (const { instance, config } of bots) {
-    try {
-      await instance.telegram.deleteWebhook({
-        drop_pending_updates: true,
-      });
-
-      await sleep(2000);
-
-      await instance.launch({
-        dropPendingUpdates: true,
-        allowedUpdates: ["message"],
-      });
-
-      console.log(`${config.code} bot launched ✅`);
-    } catch (err) {
-      console.error(`${config.code}_BOT_LAUNCH_ERROR:`, err);
-    }
-  }
-}
-
-await startBots();
-
-async function stopBots(signal) {
-  console.log(`Stopping bots: ${signal}`);
-
-  for (const { instance, config } of bots) {
-    try {
-      instance.stop(signal);
-      console.log(`${config.code} bot stopped ✅`);
-    } catch (err) {
-      console.error(`${config.code}_BOT_STOP_ERROR:`, err);
-    }
-  }
-}
-
-process.once("SIGINT", async () => {
-  await stopBots("SIGINT");
-  process.exit(0);
-});
-
-process.once("SIGTERM", async () => {
-  await stopBots("SIGTERM");
-  process.exit(0);
+process.once("SIGTERM", () => {
+  bot.stop("SIGTERM");
 });
