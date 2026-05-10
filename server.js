@@ -15,7 +15,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3001;
 const AI_MODEL = process.env.AI_MODEL || "gpt-4.1-mini";
 const MEMORY_ENABLED = process.env.MEMORY_ENABLED === "true";
-
+//
 const BOT_CONFIGS = [
   {
     code: "FBT",
