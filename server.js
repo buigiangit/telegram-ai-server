@@ -1504,6 +1504,12 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
+const tokenSet = new Set(BOT_CONFIGS.map((x) => x.token));
+
+if (tokenSet.size !== BOT_CONFIGS.length) {
+  throw new Error("FBT_BOT_TOKEN và CDT_BOT_TOKEN đang bị trùng nhau.");
+}
+
 const bots = BOT_CONFIGS.map((config) => {
   const instance = new Telegraf(config.token);
   setupBot(instance, config);
@@ -1511,14 +1517,17 @@ const bots = BOT_CONFIGS.map((config) => {
 });
 
 for (const { instance, config } of bots) {
-  instance
-    .launch()
-    .then(() => {
-      console.log(`${config.code} bot launched ✅`);
-    })
-    .catch((err) => {
-      console.error(`${config.code}_BOT_LAUNCH_ERROR:`, err);
+  try {
+    await instance.telegram.deleteWebhook({ drop_pending_updates: true });
+    await instance.launch({
+      dropPendingUpdates: true,
+      allowedUpdates: ["message"],
     });
+
+    console.log(`${config.code} bot launched ✅`);
+  } catch (err) {
+    console.error(`${config.code}_BOT_LAUNCH_ERROR:`, err);
+  }
 }
 
 process.once("SIGINT", () => {
