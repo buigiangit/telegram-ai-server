@@ -15,7 +15,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3001;
 const AI_MODEL = process.env.AI_MODEL || "gpt-4.1-mini";
 const MEMORY_ENABLED = process.env.MEMORY_ENABLED === "true";
-//
+
 const BOT_CONFIGS = [
   {
     code: "FBT",
@@ -284,7 +284,7 @@ function memoryText(memory) {
   const recent = messages
     .slice(-6)
     .map((m) => `${m.role}: ${m.text}`)
-    .join("");
+    .join("\n");
 
   return `
 MEMORY USER:
@@ -474,7 +474,7 @@ async function getCachedBinanceSymbols() {
 async function detectSymbol(text, memory = null) {
   if (!text) return null;
 
-  const upper = text.toUpperCase();
+  const upper = String(text).toUpperCase();
 
   const specialMap = [
     { keywords: ["XAU", "GOLD", "VANG", "VÀNG"], symbol: "XAUUSD" },
@@ -503,7 +503,7 @@ async function detectSymbol(text, memory = null) {
     "SL", "STL", "STOP", "LOSS", "ROI", "SAO", "RỒI", "HOM", "HÔM", "NAY",
     "PHAN", "PHÂN", "TICH", "TÍCH", "CO", "CÓ", "DUOC", "ĐƯỢC", "KHONG",
     "KHÔNG", "GIUP", "GIÚP", "XEM", "SCALP", "SCALPING", "SWING", "EMA",
-    "SONIC", "FUNDING", "OI", "PHÂN", "TÍCH", "CALL", "LỆNH", "LENH",
+    "SONIC", "FUNDING", "OI", "CALL", "LỆNH", "LENH", "PHÂN", "TÍCH",
     "THƯ", "KÝ", "THU", "KY", "THUKY", "KI",
   ];
 
@@ -1255,7 +1255,7 @@ OI Change 1H: ${fmtPct(data.oiChangePct1h)}
 
 ${data.modeRule}
 
-${data.frames.map(frameText).join("")}
+${data.frames.map(frameText).join("\n")}
 
 ${engineText(data.engine)}
 
@@ -1504,12 +1504,6 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-const tokenSet = new Set(BOT_CONFIGS.map((x) => x.token));
-
-if (tokenSet.size !== BOT_CONFIGS.length) {
-  throw new Error("FBT_BOT_TOKEN và CDT_BOT_TOKEN đang bị trùng nhau.");
-}
-
 const bots = BOT_CONFIGS.map((config) => {
   const instance = new Telegraf(config.token);
   setupBot(instance, config);
@@ -1517,17 +1511,14 @@ const bots = BOT_CONFIGS.map((config) => {
 });
 
 for (const { instance, config } of bots) {
-  try {
-    await instance.telegram.deleteWebhook({ drop_pending_updates: true });
-    await instance.launch({
-      dropPendingUpdates: true,
-      allowedUpdates: ["message"],
+  instance
+    .launch()
+    .then(() => {
+      console.log(`${config.code} bot launched ✅`);
+    })
+    .catch((err) => {
+      console.error(`${config.code}_BOT_LAUNCH_ERROR:`, err);
     });
-
-    console.log(`${config.code} bot launched ✅`);
-  } catch (err) {
-    console.error(`${config.code}_BOT_LAUNCH_ERROR:`, err);
-  }
 }
 
 process.once("SIGINT", () => {
