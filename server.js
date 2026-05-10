@@ -1504,31 +1504,64 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
+const tokenSet = new Set(BOT_CONFIGS.map((x) => x.token));
+
+if (tokenSet.size !== BOT_CONFIGS.length) {
+  throw new Error("FBT_BOT_TOKEN và CDT_BOT_TOKEN đang bị trùng nhau.");
+}
+
 const bots = BOT_CONFIGS.map((config) => {
   const instance = new Telegraf(config.token);
   setupBot(instance, config);
   return { instance, config };
 });
 
-for (const { instance, config } of bots) {
-  instance
-    .launch()
-    .then(() => {
-      console.log(`${config.code} bot launched ✅`);
-    })
-    .catch((err) => {
-      console.error(`${config.code}_BOT_LAUNCH_ERROR:`, err);
-    });
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-process.once("SIGINT", () => {
-  for (const { instance } of bots) {
-    instance.stop("SIGINT");
+async function startBots() {
+  for (const { instance, config } of bots) {
+    try {
+      await instance.telegram.deleteWebhook({
+        drop_pending_updates: true,
+      });
+
+      await sleep(2000);
+
+      await instance.launch({
+        dropPendingUpdates: true,
+        allowedUpdates: ["message"],
+      });
+
+      console.log(`${config.code} bot launched ✅`);
+    } catch (err) {
+      console.error(`${config.code}_BOT_LAUNCH_ERROR:`, err);
+    }
   }
+}
+
+await startBots();
+
+async function stopBots(signal) {
+  console.log(`Stopping bots: ${signal}`);
+
+  for (const { instance, config } of bots) {
+    try {
+      instance.stop(signal);
+      console.log(`${config.code} bot stopped ✅`);
+    } catch (err) {
+      console.error(`${config.code}_BOT_STOP_ERROR:`, err);
+    }
+  }
+}
+
+process.once("SIGINT", async () => {
+  await stopBots("SIGINT");
+  process.exit(0);
 });
 
-process.once("SIGTERM", () => {
-  for (const { instance } of bots) {
-    instance.stop("SIGTERM");
-  }
+process.once("SIGTERM", async () => {
+  await stopBots("SIGTERM");
+  process.exit(0);
 });
