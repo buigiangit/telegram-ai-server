@@ -398,7 +398,7 @@ async function detectSymbol(text, memory = null) {
   const upper = String(text).toUpperCase();
 
   const specialMap = [
-    { keywords: ["XAU", "XAUT", "GOLD", "VANG", "VÀNG"], symbol: "XAUUSDT" },
+    { keywords: ["XAU", "XAUUSD", "GOLD", "VANG", "VÀNG"], symbol: "XAUUSD" },
     { keywords: ["OIL", "DAU", "DẦU", "WTI", "USOIL"], symbol: "USOIL" },
   ];
 
@@ -457,7 +457,86 @@ async function fetchJsonWithTimeout(url, timeoutMs = 12000) {
     clearTimeout(timer);
   }
 }
+async function getXauKlines(interval = "1h", limit = 650) {
+  const map = {
+    "15m": "15m",
+    "1h": "1h",
+    "4h": "1h",
+    "1d": "1d",
+  };
 
+  const yahooInterval = map[interval] || "1h";
+
+  const range =
+    interval === "1d"
+      ? "2y"
+      : interval === "4h"
+      ? "180d"
+      : "60d";
+
+  const url =
+    `https://query1.finance.yahoo.com/v8/finance/chart/GC=F` +
+    `?interval=${yahooInterval}&range=${range}`;
+
+  const data = await fetchJsonWithTimeout(url, 15000);
+  const result = data?.chart?.result?.[0];
+
+  if (!result) {
+    console.error("YAHOO_XAU_ERROR:", data);
+    throw new Error("Không lấy được dữ liệu XAU/USD từ Yahoo Finance");
+  }
+
+  const timestamps = result.timestamp || [];
+  const quote = result.indicators?.quote?.[0];
+
+  if (!quote || timestamps.length === 0) {
+    throw new Error("Dữ liệu XAU/USD rỗng");
+  }
+
+  const rawCandles = [];
+
+  for (let i = 0; i < timestamps.length; i++) {
+    if (
+      quote.open[i] == null ||
+      quote.high[i] == null ||
+      quote.low[i] == null ||
+      quote.close[i] == null
+    ) {
+      continue;
+    }
+
+    rawCandles.push({
+      openTime: timestamps[i] * 1000,
+      open: Number(quote.open[i]),
+      high: Number(quote.high[i]),
+      low: Number(quote.low[i]),
+      close: Number(quote.close[i]),
+      volume: Number(quote.volume?.[i] || 0),
+    });
+  }
+
+  if (interval !== "4h") {
+    return rawCandles.slice(-limit);
+  }
+
+  const candles = [];
+
+  for (let i = 0; i < rawCandles.length; i += 4) {
+    const chunk = rawCandles.slice(i, i + 4);
+    if (chunk.length < 4) continue;
+
+    candles.push({
+      openTime: chunk[0].openTime,
+      open: chunk[0].open,
+      high: Math.max(...chunk.map((c) => c.high)),
+      low: Math.min(...chunk.map((c) => c.low)),
+      close: chunk[chunk.length - 1].close,
+      volume: chunk.reduce((sum, c) => sum + c.volume, 0),
+    });
+  }
+
+  return candles.slice(-limit);
+}
 async function getBinanceKlines(symbol, interval = "1h", limit = 800) {
   const futuresSymbols = ["XAUUSDT"];
   const isFutures = futuresSymbols.includes(symbol);
@@ -1007,74 +1086,25 @@ function buildSignalEngine(data, modeConfig) {
 }
 
 // ================= CONTEXT =================
-
 async function getMarketContext(symbol, mode = "DEFAULT") {
   const modeConfig = getModeConfig(mode);
-
-  // if (symbol === "XAUUSD") {
-  //   const price = await getGoldPrice();
-
-  //   const frame = {
-  //     tf: modeConfig.primaryTf,
-  //     price,
-  //     ema34: null,
-  //     ema89: null,
-  //     ema200: null,
-  //     ema610: null,
-  //     rsi14: null,
-  //     macdLine: null,
-  //     macdSignal: null,
-  //     macdHist: null,
-  //     volume: null,
-  //     avgVol20: null,
-  //     atr14: price * 0.006,
-  //     support: price - 20,
-  //     resistance: price + 20,
-  //     wave: "NEUTRAL",
-  //   };
-
-  //   const data = {
-  //     symbol: "XAUUSD",
-  //     mode: modeConfig.mode,
-  //     modeRule: modeConfig.rule,
-  //     note: "XAU dùng giá tham khảo, chưa có Funding/OI.",
-  //     fundingRate: null,
-  //     openInterest: null,
-  //     oiChangePct1h: null,
-  //     frames: [frame],
-  //   };
-
-  //   return {
-  //     ...data,
-  //     engine: {
-  //       primaryTf: frame.tf,
-  //       trendTf: "N/A",
-  //       emaStructure: "UNKNOWN",
-  //       marketCondition: "UNKNOWN",
-  //       longScore: 0,
-  //       shortScore: 0,
-  //       bias: "CHỜ",
-  //       reason: "XAU chưa có đủ dữ liệu indicator trong bản này.",
-  //       plan: {
-  //         side: "CHỜ",
-  //         waitZone: `${fmt(price - 20)} - ${fmt(price + 20)}`,
-  //         riskLevel: "Cao",
-  //       },
-  //     },
-  //   };
-  // }
 
   if (symbol === "USOIL") {
     throw new Error("Dầu chưa có nguồn dữ liệu ổn định trong bản này.");
   }
 
+  const isXau = symbol === "XAUUSD";
+
   const [fundingRate, openInterest, oiStats, ...candleResults] =
     await Promise.all([
-      getFundingRate(symbol),
-      getOpenInterest(symbol),
-      getOpenInterestStats(symbol),
+      isXau ? null : getFundingRate(symbol),
+      isXau ? null : getOpenInterest(symbol),
+      isXau ? { oiChangePct1h: null } : getOpenInterestStats(symbol),
       ...modeConfig.intervals.map((item) =>
-        getBinanceKlines(symbol, item.interval, 800).then((candles) => ({
+        (isXau
+          ? getXauKlines(item.interval, 650)
+          : getBinanceKlines(symbol, item.interval, 650)
+        ).then((candles) => ({
           label: item.label,
           candles,
         }))
@@ -1085,7 +1115,9 @@ async function getMarketContext(symbol, mode = "DEFAULT") {
     symbol,
     mode: modeConfig.mode,
     modeRule: modeConfig.rule,
-    note: "",
+    note: isXau
+      ? "XAU/USD lấy dữ liệu OHLC từ Yahoo Finance GC=F, không có Funding/OI."
+      : "",
     fundingRate,
     openInterest,
     oiChangePct1h: oiStats?.oiChangePct1h ?? null,
