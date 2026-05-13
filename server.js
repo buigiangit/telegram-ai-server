@@ -398,7 +398,7 @@ async function detectSymbol(text, memory = null) {
   const upper = String(text).toUpperCase();
 
   const specialMap = [
-    { keywords: ["XAU", "XAUT", "GOLD", "VANG", "VÀNG"], symbol: "PAXGUSDT" },
+    { keywords: ["XAU", "XAUT", "GOLD", "VANG", "VÀNG"], symbol: "XAUUSDT" },
     { keywords: ["OIL", "DAU", "DẦU", "WTI", "USOIL"], symbol: "USOIL" },
   ];
 
@@ -447,9 +447,13 @@ async function detectSymbol(text, memory = null) {
 // ================= MARKET DATA =================
 
 async function getBinanceKlines(symbol, interval = "1h", limit = 800) {
-  const url =
-    `https://api.binance.com/api/v3/klines` +
-    `?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  const isFuturesOnly = ["XAUUSDT"].includes(symbol);
+
+  const baseUrl = isFuturesOnly
+    ? "https://fapi.binance.com/fapi/v1/klines"
+    : "https://api.binance.com/api/v3/klines";
+
+  const url = `${baseUrl}?symbol=${symbol}&interval=${interval}&limit=${limit}`;
 
   const res = await fetch(url);
   const data = await res.json();
