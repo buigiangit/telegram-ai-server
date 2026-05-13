@@ -446,20 +446,33 @@ async function detectSymbol(text, memory = null) {
 
 // ================= MARKET DATA =================
 
-async function getBinanceKlines(symbol, interval = "1h", limit = 800) {
-  const isFuturesOnly = ["XAUUSDT"].includes(symbol);
+async function fetchJsonWithTimeout(url, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  const baseUrl = isFuturesOnly
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getBinanceKlines(symbol, interval = "1h", limit = 800) {
+  const futuresSymbols = ["XAUUSDT"];
+  const isFutures = futuresSymbols.includes(symbol);
+
+  const baseUrl = isFutures
     ? "https://fapi.binance.com/fapi/v1/klines"
     : "https://api.binance.com/api/v3/klines";
 
   const url = `${baseUrl}?symbol=${symbol}&interval=${interval}&limit=${limit}`;
 
-  const res = await fetch(url);
-  const data = await res.json();
+  const data = await fetchJsonWithTimeout(url, 15000);
 
   if (!Array.isArray(data)) {
-    throw new Error(`Không lấy được dữ liệu ${symbol}`);
+    console.error("KLINE_API_ERROR:", symbol, data);
+    throw new Error(`Không lấy được dữ liệu nến ${symbol}`);
   }
 
   return data.map((k) => ({
