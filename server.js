@@ -398,7 +398,7 @@ async function detectSymbol(text, memory = null) {
   const upper = String(text).toUpperCase();
 
   const specialMap = [
-    { keywords: ["XAU", "GOLD", "VANG", "VÀNG"], symbol: "XAUUSD" },
+     keywords: ["XAU", "XAUT", "GOLD", "VANG", "VÀNG"], symbol: "PAXGUSDT" },
     { keywords: ["OIL", "DAU", "DẦU", "WTI", "USOIL"], symbol: "USOIL" },
   ];
 
@@ -994,58 +994,58 @@ function buildSignalEngine(data, modeConfig) {
 async function getMarketContext(symbol, mode = "DEFAULT") {
   const modeConfig = getModeConfig(mode);
 
-  if (symbol === "XAUUSD") {
-    const price = await getGoldPrice();
+  // if (symbol === "XAUUSD") {
+  //   const price = await getGoldPrice();
 
-    const frame = {
-      tf: modeConfig.primaryTf,
-      price,
-      ema34: null,
-      ema89: null,
-      ema200: null,
-      ema610: null,
-      rsi14: null,
-      macdLine: null,
-      macdSignal: null,
-      macdHist: null,
-      volume: null,
-      avgVol20: null,
-      atr14: price * 0.006,
-      support: price - 20,
-      resistance: price + 20,
-      wave: "NEUTRAL",
-    };
+  //   const frame = {
+  //     tf: modeConfig.primaryTf,
+  //     price,
+  //     ema34: null,
+  //     ema89: null,
+  //     ema200: null,
+  //     ema610: null,
+  //     rsi14: null,
+  //     macdLine: null,
+  //     macdSignal: null,
+  //     macdHist: null,
+  //     volume: null,
+  //     avgVol20: null,
+  //     atr14: price * 0.006,
+  //     support: price - 20,
+  //     resistance: price + 20,
+  //     wave: "NEUTRAL",
+  //   };
 
-    const data = {
-      symbol: "XAUUSD",
-      mode: modeConfig.mode,
-      modeRule: modeConfig.rule,
-      note: "XAU dùng giá tham khảo, chưa có Funding/OI.",
-      fundingRate: null,
-      openInterest: null,
-      oiChangePct1h: null,
-      frames: [frame],
-    };
+  //   const data = {
+  //     symbol: "XAUUSD",
+  //     mode: modeConfig.mode,
+  //     modeRule: modeConfig.rule,
+  //     note: "XAU dùng giá tham khảo, chưa có Funding/OI.",
+  //     fundingRate: null,
+  //     openInterest: null,
+  //     oiChangePct1h: null,
+  //     frames: [frame],
+  //   };
 
-    return {
-      ...data,
-      engine: {
-        primaryTf: frame.tf,
-        trendTf: "N/A",
-        emaStructure: "UNKNOWN",
-        marketCondition: "UNKNOWN",
-        longScore: 0,
-        shortScore: 0,
-        bias: "CHỜ",
-        reason: "XAU chưa có đủ dữ liệu indicator trong bản này.",
-        plan: {
-          side: "CHỜ",
-          waitZone: `${fmt(price - 20)} - ${fmt(price + 20)}`,
-          riskLevel: "Cao",
-        },
-      },
-    };
-  }
+  //   return {
+  //     ...data,
+  //     engine: {
+  //       primaryTf: frame.tf,
+  //       trendTf: "N/A",
+  //       emaStructure: "UNKNOWN",
+  //       marketCondition: "UNKNOWN",
+  //       longScore: 0,
+  //       shortScore: 0,
+  //       bias: "CHỜ",
+  //       reason: "XAU chưa có đủ dữ liệu indicator trong bản này.",
+  //       plan: {
+  //         side: "CHỜ",
+  //         waitZone: `${fmt(price - 20)} - ${fmt(price + 20)}`,
+  //         riskLevel: "Cao",
+  //       },
+  //     },
+  //   };
+  // }
 
   if (symbol === "USOIL") {
     throw new Error("Dầu chưa có nguồn dữ liệu ổn định trong bản này.");
